@@ -8,6 +8,10 @@
 :root{--bg:#f4f6f9;--panel:#fff;--line:#e8ebf0;--text:#141a22;--sub:#6b7480;--faint:#9aa3ae;--accent:#0f8f88;--accent2:#3b6cf6;--accent-soft:#e6f4f3;--rec:#ef4444;--shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px rgba(16,24,40,.06)}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#4b5563;border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:#1f2937}
 body{font-family:Pretendard,-apple-system,"Malgun Gothic",sans-serif;color:var(--text);background:var(--bg);font-size:14px;-webkit-font-smoothing:antialiased;overflow:hidden;user-select:none}
 button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
 input,textarea{font:inherit;color:inherit}
@@ -67,30 +71,29 @@ h1{font-size:30px;font-weight:750;letter-spacing:-.02em;line-height:1.3;text-ali
 .steps .done{color:var(--sub)}
 /* record */
 #v-record{padding:28px 40px 40px;background:radial-gradient(700px 420px at 50% 18%,rgba(59,108,246,.10),transparent 70%)}
-.stage.solo{max-width:460px;margin:0 auto;padding:26px 24px 20px}
-.wave.big{height:44px;gap:4px;margin-top:16px}
+.stage.solo{max-width:460px;margin:0 auto;padding:20px 22px 16px}
 .wave.big i{width:5px}
-.stage-note{color:#9fb3c8;font-size:12.5px;margin-top:20px;text-align:center}
+.stage-note{color:#9fb3c8;font-size:12.5px;margin-top:12px;text-align:center}
 .stage{background:linear-gradient(160deg,#0f1b2d,#13283b 55%,#0f3a3a);border-radius:26px;color:#fff;display:flex;flex-direction:column;align-items:center;padding:30px 24px;position:relative;overflow:hidden;box-shadow:0 20px 50px rgba(15,27,45,.25)}
 .stage .when{font-size:13px;color:#9fb3c8;letter-spacing:.02em}
-.orb{position:relative;width:150px;height:150px;margin:20px 0 14px;display:grid;place-items:center}
+.orb{position:relative;width:110px;height:110px;margin:10px 0 6px;display:grid;place-items:center}
 .orb i{position:absolute;inset:0;border-radius:50%;border:1.5px solid rgba(94,234,212,.35);animation:ring 2.8s ease-out infinite}
 .orb i:nth-child(2){animation-delay:.9s}.orb i:nth-child(3){animation-delay:1.8s}
 @keyframes ring{0%{transform:scale(.55);opacity:.9}100%{transform:scale(1.15);opacity:0}}
-.core{width:92px;height:92px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#5eead4,#14b8a6 45%,#3b6cf6);box-shadow:0 0 60px rgba(45,212,191,.55),inset 0 -8px 20px rgba(0,0,0,.2);display:grid;place-items:center;transition:transform .12s ease-out}
+.core{width:70px;height:70px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#5eead4,#14b8a6 45%,#3b6cf6);box-shadow:0 0 60px rgba(45,212,191,.55),inset 0 -8px 20px rgba(0,0,0,.2);display:grid;place-items:center;transition:transform .12s ease-out}
 .core svg{opacity:.95}
-.stage .timer{font-size:34px;font-weight:750;letter-spacing:.03em;font-variant-numeric:tabular-nums}
-.live-chip{display:inline-flex;align-items:center;gap:7px;margin-top:10px;padding:6px 12px;border-radius:99px;background:rgba(255,255,255,.08);font-size:12.5px;color:#d1e7f0}
+.stage .timer{font-size:30px;font-weight:750;letter-spacing:.03em;font-variant-numeric:tabular-nums}
+.live-chip{display:inline-flex;align-items:center;gap:7px;margin-top:6px;padding:6px 12px;border-radius:99px;background:rgba(255,255,255,.08);font-size:12.5px;color:#d1e7f0}
 .live-chip:before{content:"";width:8px;height:8px;border-radius:50%;background:#f87171;box-shadow:0 0 0 4px rgba(248,113,113,.25);animation:bl 1.2s infinite}
-.stage .wave{margin-top:26px;height:34px;gap:4px}
+.stage .wave{margin-top:12px;height:32px;gap:4px}
 .stage .wave i{background:linear-gradient(#5eead4,#3b6cf6);width:4px}
-.stage-meta{margin-top:16px;width:100%;display:flex;flex-direction:column;gap:8px}
-.stage-meta div{display:flex;justify-content:space-between;font-size:12.5px;color:#9fb3c8;padding:9px 12px;background:rgba(255,255,255,.05);border-radius:10px}
+.stage-meta{margin-top:12px;width:100%;display:flex;flex-direction:column;gap:8px}
+.stage-meta div{display:flex;justify-content:space-between;font-size:12.5px;color:#9fb3c8;padding:7px 12px;background:rgba(255,255,255,.05);border-radius:10px}
 .stage-meta b{color:#e6f1f7;font-weight:600}
 .ln.new{animation:fade .5s ease}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}}
 .ok{color:var(--accent)!important;font-weight:600}
-.recbar{width:fit-content;margin:24px auto 0;display:flex;align-items:center;gap:28px;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:10px 12px 10px 22px;box-shadow:0 12px 40px rgba(16,24,40,.14)}
+.recbar{width:fit-content;margin:40px auto 0;display:flex;align-items:center;gap:28px;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:10px 12px 10px 22px;box-shadow:0 12px 40px rgba(16,24,40,.14)}
 .wave{display:flex;align-items:center;gap:3px;height:24px}
 .wave i{width:3px;border-radius:3px;background:var(--accent2);height:4px;transition:height .1s}
 .recdot{display:flex;align-items:center;gap:7px;font-weight:650}
@@ -231,7 +234,7 @@ p.pg{color:var(--sub);margin-bottom:22px}
       <div class="stage solo">
         <div class="when" id="rec-date"></div>
         <div class="rec-name" id="rec-name"></div>
-        <div class="orb"><i></i><i></i><i></i><div class="core" id="core"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke-linecap="round"/></svg></div></div>
+        <div class="orb"><i></i><i></i><i></i><div class="core" id="core"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke-linecap="round"/></svg></div></div>
         <div class="timer" id="timer">00:00:00</div>
         <div class="live-chip">녹음 중</div>
         <div class="wave big" id="wave"></div>
