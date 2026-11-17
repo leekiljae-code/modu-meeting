@@ -237,6 +237,8 @@ class Api:
 
     def check_update(self):
         import urllib.request
+        if IS_WIN and "\\WindowsApps\\" in sys.executable:
+            return None
         try:
             req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest", headers={"User-Agent": APP_NAME})
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -338,6 +340,20 @@ class Api:
         text = p.read_text(encoding="utf-8")
         text = re.sub(rf"(?m)^(\[\d\d:\d\d:\d\d\]) \[{re.escape(old)}\] ", lambda m: f"{m.group(1)} [{new}] ", text)
         p.write_text(text, encoding="utf-8")
+        return True
+
+    def delete_transcript(self, path):
+        p = Path(path)
+        if p.parent != output_dir() or p.suffix != ".txt":
+            return "삭제할 수 없는 파일입니다"
+        source = parse_transcript(p)["meta"].get("source")
+        rec = output_dir() / "녹음" / source if source else None
+        try:
+            p.unlink()
+            if rec and rec.is_file():
+                rec.unlink()
+        except OSError as e:
+            return f"삭제 실패: {e}"
         return True
 
     def copy_text(self, path):
