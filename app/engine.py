@@ -29,7 +29,6 @@ HALLUCINATIONS = (
 )
 
 SHORT_HALLUCINATIONS = {"감사합니다", "고맙습니다", "매주일요일업로드됩니다", "구독해주세요", "시청해주셔서감사합니다"}
-
 WHISPER_REPOS = {
     "mlx": "mlx-community/whisper-large-v3-mlx",
     "gpu": "Systran/faster-whisper-large-v3",
@@ -307,7 +306,7 @@ class Engine:
                 names[lab] = f"화자{n}"
         return [(s, e, names[lab]) for s, e, lab in segs]
 
-    def _transcribe_piece(self, audio, prompt, fast=False):
+    def _transcribe_piece(self, audio, prompt):
         common = dict(language="ko", initial_prompt=prompt or None, word_timestamps=True,
                       condition_on_previous_text=False, compression_ratio_threshold=2.4,
                       no_speech_threshold=0.6, hallucination_silence_threshold=2.0)
@@ -320,7 +319,7 @@ class Engine:
                                 [w.get("word", "") for w in seg.get("words", [])],
                                 seg.get("compression_ratio", 0), seg.get("no_speech_prob", 0), seg.get("avg_logprob", 0)))
         else:
-            segments, _ = self.asr.transcribe(audio, log_prob_threshold=-1.0, beam_size=1 if fast else 5, vad_filter=False, **common)
+            segments, _ = self.asr.transcribe(audio, log_prob_threshold=-1.0, beam_size=5, vad_filter=False, **common)
             for seg in segments:
                 words = seg.words or []
                 results.append((seg.text, [w.probability for w in words], [w.word for w in words],
@@ -393,183 +392,3 @@ class Engine:
             return out
 
 
-
-class Resampler:
-    BLOCK = 0.5
-
-    def __init__(self):
-        self.buf = None
-
-    def feed(self, samples: np.ndarray, rate: int) -> np.ndarray:
-        if rate == SR:
-            return samples
-        from math import ceil, gcd
-        from scipy.signal import resample_poly
-        g = gcd(SR, rate)
-        up, down = SR // g, rate // g
-        pad = down * ceil(300 / down)
-        block = down * ceil(rate * self.BLOCK / down)
-        if self.buf is None:
-            self.buf = np.zeros(pad, np.float32)
-        self.buf = np.concatenate([self.buf, samples])
-        out = []
-        while len(self.buf) >= pad + block + pad:
-            y = resample_poly(self.buf[:pad + block + pad], up, down)
-            out.append(y[pad * up // down:(pad + block) * up // down])
-            self.buf = self.buf[block:]
-        return np.concatenate(out).astype(np.float32) if out else np.zeros(0, np.float32)
-
-
-class LiveTranscriber:
-    FRAME = SR * 30 // 1000
-    PAUSE = 0.35
-    TURN_END = 1.0
-    MAX_TURN = 20.0
-    MAX_SEG = 8.0
-    MIN_AUDIO = 0.8
-    MATCH_SIM = 0.5
-    NEW_SPEAKER_MIN = 3.0
-    MAX_LAG = 45.0
-
-    def __init__(self, engine: Engine, on_lines, on_status, num_speakers=None):
-        self.engine = engine
-        self.on_lines = on_lines
-        self.on_status = on_status
-        self.max_speakers = num_speakers
-        self.incoming = []
-        self.cond = threading.Condition()
-        self.stop_event = threading.Event()
-        self.centroids = {}
-        self.last_name = None
-        self.mine = np.load(voice_profile_path()) if voice_profile_path().exists() else None
-        self.recent = []
-        self.fed = 0.0
-        self.resampler = Resampler()
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def feed(self, samples: np.ndarray, rate: int):
-        samples = self.resampler.feed(samples.astype(np.float32), rate)
-        if not len(samples):
-            return
-        with self.cond:
-            self.incoming.append(samples.astype(np.float32))
-            self.fed += len(samples) / SR
-            self.cond.notify()
-
-    def stop(self):
-        self.stop_event.set()
-        with self.cond:
-            self.cond.notify()
-
-    def _pull(self):
-        with self.cond:
-            while not self.incoming and not self.stop_event.is_set():
-                self.cond.wait(0.5)
-            data, self.incoming = self.incoming, []
-        return np.concatenate(data) if data else None
-
-    def _segments(self):
-        from faster_whisper.vad import VadOptions, get_speech_timestamps
-        opts = VadOptions(threshold=0.3, min_speech_duration_ms=200, min_silence_duration_ms=int(self.PAUSE * 1000),
-                          speech_pad_ms=100)
-        pend = np.zeros(0, np.float32)
-        t0 = 0.0
-        step = SR // 2
-        checked = 0
-        while not self.stop_event.is_set():
-            new = self._pull()
-            if new is None:
-                continue
-            pend = np.concatenate([pend, new])
-            if len(pend) - checked < step:
-                continue
-            checked = len(pend)
-            while True:
-                spans = get_speech_timestamps(pend, opts, sampling_rate=SR)
-                if not spans:
-                    keep = SR // 2
-                    if len(pend) > keep:
-                        t0 += (len(pend) - keep) / SR
-                        pend = pend[-keep:]
-                    break
-                first, end = spans[0]["start"], spans[0]["end"]
-                if len(spans) > 1 or len(pend) - end >= self.PAUSE * SR:
-                    cut = min(end, first + int(self.MAX_SEG * SR))
-                elif len(pend) - first >= self.MAX_SEG * SR:
-                    cut = first + int(self.MAX_SEG * SR)
-                else:
-                    break
-                yield t0 + first / SR, t0 + cut / SR, pend[first:cut].copy()
-                t0 += cut / SR
-                pend = pend[cut:]
-            checked = len(pend)
-
-    def _name_for(self, emb, duration, final):
-        if emb is None or not np.all(np.isfinite(emb)):
-            return self.last_name or "화자1"
-        known = dict(self.centroids)
-        if self.mine is not None:
-            known["나"] = self.mine
-        others = self.max_speakers - (1 if self.mine is not None else 0) if self.max_speakers else None
-        if known:
-            sim, name = max((cosine(c, emb), n) for n, c in known.items())
-            full = others is not None and len(self.centroids) >= others
-            if sim >= self.MATCH_SIM or full or duration < self.NEW_SPEAKER_MIN:
-                if final and name != "나":
-                    self.centroids[name] = self.centroids[name] * 0.85 + emb * 0.15
-                return name
-        name = f"화자{len(self.centroids) + 1}"
-        if final:
-            self.centroids[name] = emb
-        return name
-
-    def _run(self):
-        import torch
-        eng = self.engine
-        try:
-            with eng.lock:
-                eng.load_diarizer()
-                eng.load_asr()
-            self.on_status("듣는 중")
-        except Exception as e:
-            self.on_status(f"실시간 받아쓰기를 사용할 수 없습니다 ({e})")
-            return
-        hints, fixes = read_glossary()
-        gap = np.zeros(SR // 7, np.float32)
-        turn = None
-        for start, end, audio in self._segments():
-            if self.fed - end > self.MAX_LAG:
-                self.on_status("처리가 밀려 일부 구간을 건너뜁니다")
-                turn = None
-                continue
-            duration = end - start
-            with eng.lock:
-                if self.stop_event.is_set():
-                    return
-                try:
-                    emb = None
-                    if duration >= 1.0:
-                        e = np.asarray(eng.pipeline._embedding(torch.from_numpy(normalize_loudness(audio))[None, None])).reshape(-1)
-                        emb = e / (np.linalg.norm(e) + 1e-10)
-                    if turn and emb is None:
-                        name = turn["who"]
-                    else:
-                        name = self._name_for(emb, duration, True)
-                    joins = turn and turn["who"] == name and start - turn["end"] <= self.TURN_END and turn["len"] + duration <= self.MAX_TURN
-                    if joins:
-                        turn["audio"] = np.concatenate([turn["audio"], gap, audio])
-                        turn["end"], turn["len"] = end, turn["len"] + duration
-                    else:
-                        if turn and turn["text"]:
-                            self.recent.append(turn["text"])
-                        turn = {"id": f"{start:.2f}", "t": fmt_time(start), "who": name, "audio": audio, "end": end, "len": duration, "text": ""}
-                    if turn["len"] < self.MIN_AUDIO:
-                        continue
-                    prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
-                    turn["text"] = eng._render_text(eng._transcribe_piece(turn["audio"], prompt, fast=eng.backend == "cpu"), fixes)
-                except Exception as e:
-                    self.on_status(f"실시간 받아쓰기 오류: {e}")
-                    continue
-            self.last_name = name
-            if turn["text"]:
-                self.on_lines([{"id": turn["id"], "t": turn["t"], "who": turn["who"], "text": turn["text"], "final": True}])

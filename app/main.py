@@ -45,10 +45,8 @@ class Recorder:
         self.path = None
         self.level = 0.0
         self.started = 0.0
-        self.rate = 16000
-        self.listener = None
 
-    def start(self, path: Path, listener=None):
+    def start(self, path: Path):
         import numpy as np
         import sounddevice as sd
 
@@ -56,8 +54,6 @@ class Recorder:
             mono = indata[:, 0]
             self.wav.writeframes((np.clip(mono, -1, 1) * 32767).astype("<i2").tobytes())
             self.level = float(np.sqrt(np.mean(mono ** 2)))
-            if self.listener:
-                self.listener(mono.copy(), self.rate)
 
         last_error = None
         for rate in (48000, 44100, 16000):
@@ -66,8 +62,6 @@ class Recorder:
                 self.wav.setnchannels(1)
                 self.wav.setsampwidth(2)
                 self.wav.setframerate(rate)
-                self.rate = rate
-                self.listener = listener
                 self.stream = sd.InputStream(samplerate=rate, channels=1, dtype="float32", callback=callback)
                 self.stream.start()
                 self.path = path
@@ -85,7 +79,6 @@ class Recorder:
         self.stream.close()
         self.wav.close()
         self.stream = None
-        self.listener = None
         return self.path
 
     @property
@@ -141,7 +134,6 @@ class Api:
         self._jobs = queue.Queue()
         self._recorder = Recorder()
         self._voice_recorder = Recorder()
-        self._live = None
         self._title = ""
         self._prep = None
         self._current = None
@@ -304,34 +296,18 @@ class Api:
         self._title = safe_name(title or "")
         path = output_dir() / "녹음" / f"{self._title + '_' if self._title else ''}녹음_{datetime.now():%Y%m%d_%H%M%S}.wav"
         try:
-            from engine import LiveTranscriber
-            self._live = LiveTranscriber(
-                self._engine(),
-                on_lines=lambda lines: self._emit({"type": "live", "lines": lines}),
-                on_status=lambda msg: self._emit({"type": "live_status", "msg": msg}),
-                num_speakers=count,
-            )
-            self._recorder.start(path, listener=self._live.feed)
+            self._recorder.start(path)
         except Exception as e:
-            if self._live:
-                self._live.stop()
-                self._live = None
             return str(e)
         return True
 
     def stop_record(self, count=None):
         if not self._recorder.active:
             return False
-        if self._live:
-            self._live.stop()
-            self._live = None
         self._jobs.put(("meeting", self._recorder.stop(), count, self._title))
         return True
 
     def cancel_record(self):
-        if self._live:
-            self._live.stop()
-            self._live = None
         if self._recorder.active:
             path = self._recorder.stop()
             try:
