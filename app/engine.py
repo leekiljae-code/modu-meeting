@@ -1,6 +1,7 @@
 import os
 import platform
 import re
+import shutil
 import threading
 import time
 from datetime import datetime
@@ -107,6 +108,9 @@ class Engine:
         if (target / ".complete").exists():
             return target
         target.mkdir(parents=True, exist_ok=True)
+        free_mb = shutil.disk_usage(target).free / 1e6
+        if free_mb < approx_mb * 1.5:
+            raise RuntimeError(f"저장 공간이 부족합니다. {label}에 약 {approx_mb * 1.5 / 1000:.1f}GB가 필요합니다 (남은 공간 {free_mb / 1000:.1f}GB).")
         done = threading.Event()
 
         def report():
@@ -118,6 +122,11 @@ class Engine:
         t.start()
         try:
             snapshot_download(repo, local_dir=str(target))
+        except Exception as e:
+            raise RuntimeError(
+                f"{label}을 내려받지 못했습니다. 인터넷 연결을 확인한 뒤 앱을 다시 실행해 주세요. "
+                "회사·학교 네트워크라면 huggingface.co 접속이 막혀 있을 수 있습니다."
+            ) from e
         finally:
             done.set()
         (target / ".complete").write_text("ok")
