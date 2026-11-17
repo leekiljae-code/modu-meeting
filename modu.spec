@@ -9,7 +9,7 @@ packages = [
     "lightning", "lightning_fabric", "pytorch_lightning", "torchmetrics", "lightning_utilities",
     "asteroid_filterbanks", "torch_audiomentations", "pytorch_metric_learning", "torchaudio",
     "faster_whisper", "ctranslate2", "av", "sounddevice", "_sounddevice_data", "tokenizers", "huggingface_hub",
-    "einops", "safetensors", "omegaconf", "julius", "primePy", "torch_pitch_shift", "opentelemetry",
+    "customtkinter", "darkdetect", "einops", "safetensors", "omegaconf", "julius", "primePy", "torch_pitch_shift", "opentelemetry",
 ]
 if IS_MAC:
     packages += ["mlx", "mlx_whisper", "tiktoken", "tiktoken_ext", "numba", "llvmlite"]

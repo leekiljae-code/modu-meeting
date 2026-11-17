@@ -2,16 +2,15 @@ import multiprocessing
 import os
 import queue
 import subprocess
-import sys
 import threading
 import time
 import traceback
 import wave
 from datetime import datetime
 from pathlib import Path
+from tkinter import filedialog, messagebox
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import customtkinter as ctk
 
 from paths import APP_NAME, IS_MAC, IS_WIN, glossary_path, output_dir, voice_profile_path
 
@@ -24,6 +23,16 @@ NOTICE = (
     "통신비밀보호법 위반이 됩니다.\n"
     "• 처음 사용할 때 AI 모델(약 1.6~3GB)을 한 번 내려받습니다."
 )
+FONT = "Apple SD Gothic Neo" if IS_MAC else ("Malgun Gothic" if IS_WIN else "NanumGothic")
+ACCENT = ("#0f8f88", "#14a39b")
+ACCENT_HOVER = ("#0b7570", "#0f8f88")
+REC = ("#e5484d", "#e5484d")
+REC_HOVER = ("#c9373c", "#c9373c")
+CARD = ("#ffffff", "#1f2124")
+BG = ("#f3f5f7", "#141517")
+MUTED = ("#6b7280", "#9ca3af")
+SUBTLE = ("#eef1f4", "#2a2d31")
+COUNTS = ["자동", "2", "3", "4", "5", "6", "7", "8"]
 
 
 def open_path(p):
@@ -34,6 +43,10 @@ def open_path(p):
         subprocess.Popen(["open", p])
     else:
         subprocess.Popen(["xdg-open", p])
+
+
+def font(size, weight="normal"):
+    return ctk.CTkFont(family=FONT, size=size, weight=weight)
 
 
 class Recorder:
@@ -84,7 +97,7 @@ class Recorder:
 
 
 class App:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: ctk.CTk):
         self.root = root
         self.events = queue.Queue()
         self.jobs = queue.Queue()
@@ -94,57 +107,88 @@ class App:
         self.last_output = None
 
         root.title(f"{APP_NAME} {VERSION}")
-        root.minsize(520, 520)
-        font = ("Apple SD Gothic Neo", 13) if IS_MAC else ("Malgun Gothic", 10)
-        style = ttk.Style()
-        style.configure(".", font=font)
-        style.configure("Big.TButton", font=(font[0], font[1] + 3, "bold"), padding=10)
+        root.geometry("560x760")
+        root.minsize(480, 640)
+        root.configure(fg_color=BG)
 
-        frame = ttk.Frame(root, padding=16)
-        frame.pack(fill="both", expand=True)
+        page = ctk.CTkFrame(root, fg_color="transparent")
+        page.pack(fill="both", expand=True, padx=22, pady=20)
 
-        top = ttk.Frame(frame)
-        top.pack(fill="x")
-        ttk.Label(top, text="참석자 수").pack(side="left")
-        self.count = ttk.Combobox(top, values=["자동"] + [f"{n}명" for n in range(2, 11)], width=6, state="readonly")
-        self.count.current(0)
-        self.count.pack(side="left", padx=8)
-        ttk.Label(top, text="(알면 정해 주세요. 더 정확해집니다)", foreground="#777").pack(side="left")
+        head = ctk.CTkFrame(page, fg_color="transparent")
+        head.pack(fill="x")
+        ctk.CTkLabel(head, text=APP_NAME, font=font(24, "bold")).pack(anchor="w")
+        ctk.CTkLabel(head, text="말한 사람별로 정리되는 무료 회의록 · 내 컴퓨터 안에서만 처리", font=font(13), text_color=MUTED).pack(anchor="w")
 
-        self.rec_btn = ttk.Button(frame, text="●  녹음 시작", style="Big.TButton", command=self.toggle_record)
-        self.rec_btn.pack(fill="x", pady=(16, 4))
-        rec_info = ttk.Frame(frame)
-        rec_info.pack(fill="x")
-        self.timer = ttk.Label(rec_info, text="00:00:00")
-        self.timer.pack(side="left")
-        self.level = ttk.Progressbar(rec_info, maximum=1.0)
-        self.level.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        rec_card = self.card(page, pady=(16, 0))
+        ctk.CTkLabel(rec_card, text="참석자 수", font=font(13, "bold")).pack(anchor="w")
+        ctk.CTkLabel(rec_card, text="알면 골라 주세요. 더 정확해집니다", font=font(12), text_color=MUTED).pack(anchor="w")
+        self.count = ctk.CTkSegmentedButton(
+            rec_card, values=COUNTS, font=font(13), height=34,
+            fg_color=SUBTLE, unselected_color=SUBTLE, unselected_hover_color=("#e2e6ea", "#34383d"),
+            selected_color=ACCENT, selected_hover_color=ACCENT_HOVER, text_color=("#111827", "#e5e7eb"),
+        )
+        self.count.set("자동")
+        self.count.pack(fill="x", pady=(8, 18))
 
-        ttk.Button(frame, text="녹음 파일 선택해서 텍스트로 만들기…", command=self.pick_files).pack(fill="x", pady=(12, 0))
+        self.timer = ctk.CTkLabel(rec_card, text="00:00:00", font=ctk.CTkFont(family="Consolas" if IS_WIN else FONT, size=40, weight="bold"))
+        self.timer.pack()
+        self.level = ctk.CTkProgressBar(rec_card, height=6, fg_color=SUBTLE, progress_color=REC)
+        self.level.set(0)
+        self.level.pack(fill="x", padx=40, pady=(4, 16))
+        self.rec_btn = ctk.CTkButton(
+            rec_card, text="●   녹음 시작", font=font(17, "bold"), height=54, corner_radius=27,
+            fg_color=REC, hover_color=REC_HOVER, command=self.toggle_record,
+        )
+        self.rec_btn.pack(fill="x")
+        ctk.CTkButton(
+            rec_card, text="녹음 파일 불러오기  (스마트폰 녹음 등)", font=font(14), height=42, corner_radius=21,
+            fg_color="transparent", border_width=1, border_color=SUBTLE, text_color=("#111827", "#e5e7eb"),
+            hover_color=SUBTLE, command=self.pick_files,
+        ).pack(fill="x", pady=(10, 0))
 
-        tools = ttk.Frame(frame)
-        tools.pack(fill="x", pady=12)
-        self.voice_btn = ttk.Button(tools, text="내 목소리 등록", command=self.toggle_voice)
-        self.voice_btn.pack(side="left", expand=True, fill="x")
-        ttk.Button(tools, text="용어집", command=lambda: open_path(glossary_path())).pack(side="left", expand=True, fill="x", padx=6)
-        ttk.Button(tools, text="결과 폴더", command=lambda: open_path(output_dir())).pack(side="left", expand=True, fill="x")
-        self.voice_state = ttk.Label(frame, foreground="#777")
-        self.voice_state.pack(anchor="w")
+        tools = ctk.CTkFrame(page, fg_color="transparent")
+        tools.pack(fill="x", pady=(12, 0))
+        tools.grid_columnconfigure((0, 1, 2), weight=1, uniform="t")
+        self.voice_btn = self.tool_button(tools, "내 목소리 등록", self.toggle_voice, 0)
+        self.tool_button(tools, "용어집", lambda: open_path(glossary_path()), 1)
+        self.tool_button(tools, "결과 폴더", lambda: open_path(output_dir()), 2)
+        self.voice_state = ctk.CTkLabel(page, font=font(12), text_color=MUTED)
+        self.voice_state.pack(anchor="w", pady=(6, 0))
         self.refresh_voice_state()
 
-        self.progress = ttk.Progressbar(frame, maximum=1.0)
-        self.progress.pack(fill="x", pady=(12, 4))
-        self.status = ttk.Label(frame, text="준비됨")
-        self.status.pack(anchor="w")
-        self.logbox = tk.Text(frame, height=10, wrap="word", state="disabled", relief="flat", background="#f6f6f6")
-        self.logbox.pack(fill="both", expand=True, pady=(8, 0))
-        self.open_btn = ttk.Button(frame, text="결과 열기", command=self.open_last, state="disabled")
-        self.open_btn.pack(fill="x", pady=(8, 0))
+        status_card = self.card(page, pady=(10, 0), expand=True)
+        self.status = ctk.CTkLabel(status_card, text="준비됨", font=font(14, "bold"), anchor="w")
+        self.status.pack(fill="x")
+        self.progress = ctk.CTkProgressBar(status_card, height=8, fg_color=SUBTLE, progress_color=ACCENT)
+        self.progress.set(0)
+        self.progress.pack(fill="x", pady=(8, 10))
+        self.open_btn = ctk.CTkButton(
+            status_card, text="결과 열기", font=font(14, "bold"), height=42, corner_radius=21,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, state="disabled", command=self.open_last,
+        )
+        self.open_btn.pack(side="bottom", fill="x", pady=(10, 0))
+        self.logbox = ctk.CTkTextbox(status_card, height=90, font=font(12), fg_color=SUBTLE, corner_radius=10, wrap="word", state="disabled")
+        self.logbox.pack(fill="both", expand=True)
 
         threading.Thread(target=self.worker, daemon=True).start()
         root.after(100, self.poll)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(300, self.first_run)
+
+    def card(self, parent, pady, expand=False):
+        outer = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=16)
+        outer.pack(fill="both" if expand else "x", expand=expand, pady=pady)
+        inner = ctk.CTkFrame(outer, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=18, pady=16)
+        return inner
+
+    def tool_button(self, parent, text, command, col):
+        b = ctk.CTkButton(
+            parent, text=text, font=font(13), height=38, corner_radius=12,
+            fg_color=CARD, hover_color=SUBTLE, text_color=("#111827", "#e5e7eb"), command=command,
+        )
+        b.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 4, 0 if col == 2 else 4))
+        return b
 
     def first_run(self):
         flag = output_dir() / ".notice_ok"
@@ -160,28 +204,28 @@ class App:
             while True:
                 msg, progress, done = self.events.get_nowait()
                 if msg:
-                    self.status.config(text=msg)
+                    self.status.configure(text=msg)
                     if not msg.startswith("받아쓰기 ") and "내려받는 중" not in msg:
                         self.append(msg)
                 if progress is not None:
-                    self.progress["value"] = progress
+                    self.progress.set(progress)
                 if done:
                     self.last_output = done
-                    self.open_btn.config(state="normal")
+                    self.open_btn.configure(state="normal")
         except queue.Empty:
             pass
         for rec in (self.recorder, self.voice_recorder):
             if rec.active:
-                self.level["value"] = min(rec.level * 8, 1.0)
+                self.level.set(min(rec.level * 8, 1.0))
                 el = int(time.time() - rec.started)
-                self.timer.config(text=f"{el // 3600:02d}:{el % 3600 // 60:02d}:{el % 60:02d}")
+                self.timer.configure(text=f"{el // 3600:02d}:{el % 3600 // 60:02d}:{el % 60:02d}")
         self.root.after(100, self.poll)
 
     def append(self, msg):
-        self.logbox.config(state="normal")
-        self.logbox.insert("end", f"{datetime.now():%H:%M} {msg}\n")
+        self.logbox.configure(state="normal")
+        self.logbox.insert("end", f"{datetime.now():%H:%M}  {msg}\n")
         self.logbox.see("end")
-        self.logbox.config(state="disabled")
+        self.logbox.configure(state="disabled")
 
     def get_engine(self):
         if self.engine is None:
@@ -207,15 +251,15 @@ class App:
 
     def selected_count(self):
         v = self.count.get()
-        return None if v == "자동" else int(v.rstrip("명"))
+        return None if v == "자동" else int(v)
 
     def toggle_record(self):
         if self.voice_recorder.active:
             return
         if self.recorder.active:
             path = self.recorder.stop()
-            self.rec_btn.config(text="●  녹음 시작")
-            self.level["value"] = 0
+            self.rec_btn.configure(text="●   녹음 시작", fg_color=REC, hover_color=REC_HOVER)
+            self.level.set(0)
             self.append(f"녹음 저장: {path.name}")
             self.jobs.put(("meeting", path, self.selected_count()))
             return
@@ -225,7 +269,7 @@ class App:
         except Exception as e:
             messagebox.showerror(APP_NAME, f"{e}\n\n시스템 설정에서 이 프로그램의 마이크 사용을 허용해 주세요.")
             return
-        self.rec_btn.config(text="■  녹음 정지 (정지하면 바로 텍스트로 만듭니다)")
+        self.rec_btn.configure(text="■   녹음 정지  ·  정지하면 바로 텍스트로", fg_color=("#111827", "#374151"), hover_color=("#000000", "#4b5563"))
         self.append("녹음 시작")
 
     def pick_files(self):
@@ -239,8 +283,8 @@ class App:
             return
         if self.voice_recorder.active:
             path = self.voice_recorder.stop()
-            self.voice_btn.config(text="내 목소리 등록")
-            self.level["value"] = 0
+            self.voice_btn.configure(text="내 목소리 등록", fg_color=CARD, text_color=("#111827", "#e5e7eb"))
+            self.level.set(0)
             self.jobs.put(("voice", path, None))
             return
         if not messagebox.askokcancel(
@@ -255,11 +299,11 @@ class App:
         except Exception as e:
             messagebox.showerror(APP_NAME, str(e))
             return
-        self.voice_btn.config(text="■ 등록 끝내기")
+        self.voice_btn.configure(text="■ 등록 끝내기", fg_color=REC, text_color="#ffffff")
 
     def refresh_voice_state(self):
-        self.voice_state.config(
-            text="내 목소리: 등록됨 → 결과에 [나]로 표시" if voice_profile_path().exists() else "내 목소리: 등록 안 됨 (등록하면 내 말이 [나]로 표시됩니다)"
+        self.voice_state.configure(
+            text="✓ 내 목소리 등록됨 — 결과에 [나]로 표시됩니다" if voice_profile_path().exists() else "내 목소리를 등록하면 내 말이 [나]로 표시됩니다"
         )
 
     def open_last(self):
@@ -280,7 +324,8 @@ class App:
 
 def main():
     multiprocessing.freeze_support()
-    root = tk.Tk()
+    ctk.set_appearance_mode("system")
+    root = ctk.CTk()
     App(root)
     root.mainloop()
 

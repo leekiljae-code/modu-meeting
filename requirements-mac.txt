@@ -6,4 +6,5 @@ mlx-whisper
 av
 numpy
 sounddevice
+customtkinter
 huggingface_hub
