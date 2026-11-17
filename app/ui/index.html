@@ -374,7 +374,7 @@ function renderPrep(p){
   const el=$("#prep");
   if(!p){el.innerHTML="";return;}
   const pct=p.pct?`<div class="job-pct">${Math.round(p.pct*100)}%</div>`:"";
-  el.innerHTML=`<div class="job"><div class="job-top">${p.error?"":'<div class="spin"></div>'}<div><div class="job-name">AI 모델 준비 (최초 1회)</div><div class="job-msg">${esc(p.msg)}</div></div>${pct}</div>${p.pct?`<div class="bar"><i style="width:${p.pct*100}%"></i></div>`:""}</div>`;
+  el.innerHTML=`<div class="job"><div class="job-top">${p.error?"":'<div class="spin"></div>'}<div><div class="job-name">AI 엔진 준비 중</div><div class="job-msg">${esc(p.msg)}</div></div>${pct}</div>${p.pct?`<div class="bar"><i style="width:${p.pct*100}%"></i></div>`:""}</div>`;
   if($("#v-record").classList.contains("on"))$("#live-status").textContent=p.msg;
 }
 window.onEvent=e=>{
