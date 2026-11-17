@@ -32,8 +32,25 @@ def models_dir() -> Path:
     return d
 
 
+def documents_dir() -> Path:
+    if IS_WIN:
+        import ctypes
+        import uuid
+        buf = ctypes.c_wchar_p()
+        folder_id = ctypes.create_string_buffer(uuid.UUID("FDD39AD0-238F-46AF-ADB4-6C85480369C7").bytes_le)
+        try:
+            if ctypes.windll.shell32.SHGetKnownFolderPath(folder_id, 0, None, ctypes.byref(buf)) == 0:
+                path = buf.value
+                ctypes.windll.ole32.CoTaskMemFree(buf)
+                return Path(path)
+        except OSError:
+            pass
+    return Path.home() / "Documents"
+
+
 def output_dir() -> Path:
-    d = Path.home() / "Documents" / "모두의회의록"
+    legacy = Path.home() / "Documents" / "모두의회의록"
+    d = legacy if legacy.exists() else documents_dir() / "모두의회의록"
     (d / "녹음").mkdir(parents=True, exist_ok=True)
     return d
 
