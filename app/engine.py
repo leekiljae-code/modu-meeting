@@ -344,7 +344,7 @@ class Engine:
             line = line.replace(wrong, right)
         return line
 
-    def process(self, path, num_speakers=None) -> Path:
+    def process(self, path, num_speakers=None, title=None) -> Path:
         with self.lock:
             path = Path(path)
             started = time.time()
@@ -370,7 +370,7 @@ class Engine:
                 recent.append(text)
             speakers = sorted({n for _, _, n in segs}, key=lambda n: (n != "나", n))
             stamp = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d_%H%M")
-            out = output_dir() / f"{stamp}_{path.stem}.txt"
+            out = output_dir() / f"{stamp}_{title or path.stem}.txt"
             header = [
                 f"# 원본: {path.name}",
                 f"# 길이: {minutes:.0f}분 | 참석자: {len(speakers)}명 ({', '.join(speakers)})",

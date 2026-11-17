@@ -78,7 +78,7 @@ class Recorder:
                 if self.wav:
                     self.wav.close()
                 path.unlink(missing_ok=True)
-        raise RuntimeError(f"마이크를 열 수 없어요. 마이크 사용 권한을 확인해 주세요. ({last_error})")
+        raise RuntimeError(f"마이크를 열 수 없습니다. 마이크 권한을 확인하세요. ({last_error})")
 
     def stop(self) -> Path:
         self.stream.stop()
@@ -114,10 +114,19 @@ def parse_transcript(path: Path) -> dict:
     return {"meta": meta, "lines": lines, "speakers": speakers}
 
 
+REC_RE = re.compile(r"^(.*?)_?녹음_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}$")
+
+
+def safe_name(text: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\[\]]', "", text).strip()[:60]
+
+
 def title_of(path: Path) -> str:
     stem = re.sub(r"^\d{4}-\d{2}-\d{2}_\d{4}_", "", path.stem)
-    m = re.match(r"회의_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}$", stem)
-    return f"{int(m.group(2))}월 {int(m.group(3))}일 {m.group(4)}:{m.group(5)} 회의" if m else stem
+    m = REC_RE.match(stem)
+    if m:
+        return m.group(1) or f"{int(m.group(3))}월 {int(m.group(4))}일 {m.group(5)}:{m.group(6)} 녹음"
+    return stem
 
 
 def date_of(path: Path) -> str:
@@ -133,6 +142,7 @@ class Api:
         self._recorder = Recorder()
         self._voice_recorder = Recorder()
         self._live = None
+        self._title = ""
         self._current = None
         self._lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -170,21 +180,21 @@ class Api:
 
     def _worker(self):
         while True:
-            kind, path, count = self._jobs.get()
+            kind, path, count, title = self._jobs.get()
             try:
                 if kind == "voice":
                     self._engine().register_voice(path)
                     self._emit({"type": "voice"})
                     continue
-                self._current = {"name": Path(path).name, "msg": "준비 중", "pct": 0, "step": 0, "queue": self._jobs.qsize()}
+                self._current = {"name": title or title_of(Path(path)), "msg": "준비 중", "pct": 0, "step": 0, "queue": self._jobs.qsize()}
                 self._emit({"type": "job", "job": self._current})
-                out = self._engine().process(path, count)
+                out = self._engine().process(path, count, title)
                 self._current = None
                 self._emit({"type": "done", "path": str(out)})
             except Exception as e:
                 traceback.print_exc()
                 self._current = None
-                self._emit({"type": "error", "msg": f"처리하지 못했어요: {e}"})
+                self._emit({"type": "error", "msg": f"처리 실패: {e}"})
 
     def _pump(self):
         while True:
@@ -205,7 +215,7 @@ class Api:
             src = info["meta"].get("source", "")
             recent.append({
                 "path": str(p), "title": title_of(p), "date": date_of(p),
-                "kind": "rec" if src.startswith("회의_") else "file",
+                "kind": "rec" if REC_RE.match(Path(src).stem) else "file",
                 "minutes": info["meta"].get("minutes", 0), "speakers": len(info["speakers"]),
             })
         return {
@@ -217,10 +227,11 @@ class Api:
     def notice_ok(self):
         (output_dir() / ".notice_ok").write_text("ok")
 
-    def start_record(self, count=None):
+    def start_record(self, count=None, title=""):
         if self._recorder.active or self._voice_recorder.active:
-            return "이미 녹음 중이에요"
-        path = output_dir() / "녹음" / f"회의_{datetime.now():%Y%m%d_%H%M%S}.wav"
+            return "이미 녹음 중입니다"
+        self._title = safe_name(title or "")
+        path = output_dir() / "녹음" / f"{self._title + '_' if self._title else ''}녹음_{datetime.now():%Y%m%d_%H%M%S}.wav"
         try:
             from engine import LiveTranscriber
             self._live = LiveTranscriber(
@@ -242,7 +253,7 @@ class Api:
         if self._live:
             self._live.stop()
             self._live = None
-        self._jobs.put(("meeting", self._recorder.stop(), count))
+        self._jobs.put(("meeting", self._recorder.stop(), count, self._title))
         return True
 
     def cancel_record(self):
@@ -257,11 +268,12 @@ class Api:
                 pass
         return True
 
-    def pick_files(self, count=None):
+    def pick_files(self, count=None, title=""):
         types = ("녹음 파일 (" + ";".join(f"*.{e}" for e in AUDIO_EXT) + ")", "모든 파일 (*.*)")
         files = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=types) or []
+        title = safe_name(title or "") if len(files) == 1 else ""
         for f in files:
-            self._jobs.put(("meeting", Path(f), count))
+            self._jobs.put(("meeting", Path(f), count, title))
         return len(files)
 
     def read_transcript(self, path):
@@ -301,7 +313,7 @@ class Api:
 
     def voice_start(self):
         if self._recorder.active or self._voice_recorder.active:
-            return "녹음 중에는 등록할 수 없어요"
+            return "녹음 중에는 등록할 수 없습니다"
         try:
             self._voice_recorder.start(output_dir() / "녹음" / "내목소리.wav")
         except Exception as e:
@@ -310,7 +322,7 @@ class Api:
 
     def voice_stop(self):
         if self._voice_recorder.active:
-            self._jobs.put(("voice", self._voice_recorder.stop(), None))
+            self._jobs.put(("voice", self._voice_recorder.stop(), None, None))
         return True
 
     def voice_cancel(self):
