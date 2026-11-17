@@ -10,7 +10,7 @@ packages = [
     "pyannote.audio", "pyannote.core", "pyannote.pipeline", "pyannote.database", "pyannote.metrics",
     "lightning", "lightning_fabric", "pytorch_lightning", "torchmetrics", "lightning_utilities",
     "asteroid_filterbanks", "torch_audiomentations", "pytorch_metric_learning", "torchaudio",
-    "faster_whisper", "ctranslate2", "av", "sounddevice", "_sounddevice_data", "tokenizers", "huggingface_hub",
+    "faster_whisper", "ctranslate2", "onnxruntime", "av", "sounddevice", "_sounddevice_data", "tokenizers", "huggingface_hub",
     "webview", "bottle", "proxy_tools", "einops", "safetensors", "omegaconf", "julius", "primePy", "torch_pitch_shift", "opentelemetry",
 ]
 if IS_WIN:
@@ -31,7 +31,7 @@ for pkg in packages:
 for dist in [
     "pyannote.audio", "pyannote.core", "pyannote.pipeline", "pyannote.database", "pyannote.metrics",
     "torch", "torchaudio", "lightning", "pytorch_lightning", "lightning_fabric", "torchmetrics", "lightning_utilities",
-    "huggingface_hub", "tokenizers", "faster_whisper", "ctranslate2", "numpy", "scipy", "tqdm", "regex",
+    "huggingface_hub", "tokenizers", "faster_whisper", "ctranslate2", "onnxruntime", "numpy", "scipy", "tqdm", "regex",
     "requests", "packaging", "filelock", "safetensors", "asteroid_filterbanks", "pytorch_metric_learning",
     "torch_audiomentations", "opentelemetry-api", "opentelemetry-sdk", "torchcodec", "mlx", "mlx_whisper",
 ]:

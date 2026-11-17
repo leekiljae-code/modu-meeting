@@ -28,6 +28,8 @@ HALLUCINATIONS = (
     "MBC 뉴스", "KBS 뉴스", "SBS 뉴스", "자막 제공", "자막 by", "한글자막", "감사합니다 감사합니다",
 )
 
+SHORT_HALLUCINATIONS = {"감사합니다", "고맙습니다", "매주일요일업로드됩니다", "구독해주세요", "시청해주셔서감사합니다"}
+
 WHISPER_REPOS = {
     "mlx": "mlx-community/whisper-large-v3-mlx",
     "gpu": "Systran/faster-whisper-large-v3",
@@ -333,6 +335,8 @@ class Engine:
                 continue
             if any(h in text for h in HALLUCINATIONS):
                 continue
+            if re.sub(r"[\s.,!?]", "", text) in SHORT_HALLUCINATIONS and (nsp > 0.2 or lp < -0.6):
+                continue
             if probs and float(np.mean(probs)) < LOW_CONF:
                 parts.append("(잘 안 들림)")
                 continue
@@ -422,6 +426,7 @@ class LiveTranscriber:
     PAUSE = 0.35
     TURN_END = 1.0
     MAX_TURN = 20.0
+    MAX_SEG = 8.0
     MIN_AUDIO = 0.8
     MATCH_SIM = 0.5
     NEW_SPEAKER_MIN = 3.0
@@ -465,42 +470,40 @@ class LiveTranscriber:
         return np.concatenate(data) if data else None
 
     def _segments(self):
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+        opts = VadOptions(threshold=0.3, min_speech_duration_ms=200, min_silence_duration_ms=int(self.PAUSE * 1000),
+                          speech_pad_ms=100)
         pend = np.zeros(0, np.float32)
         t0 = 0.0
-        pos = 0
-        floor = 0.003
-        start = last = None
-        pause = int(self.PAUSE * SR / self.FRAME)
+        step = SR // 2
+        checked = 0
         while not self.stop_event.is_set():
             new = self._pull()
             if new is None:
                 continue
             pend = np.concatenate([pend, new])
-            while pos + self.FRAME <= len(pend):
-                rms = float(np.sqrt(np.mean(pend[pos:pos + self.FRAME] ** 2)))
-                speech = rms > max(0.006, floor * 3)
-                if not speech:
-                    floor = floor * 0.97 + rms * 0.03
-                idx = pos // self.FRAME
-                pos += self.FRAME
-                if speech:
-                    start = idx if start is None else start
-                    last = idx
-                if start is None:
-                    continue
-                too_long = (idx - start) * self.FRAME >= self.MAX_TURN * SR
-                if idx - last >= pause or too_long:
-                    a = max(0, start * self.FRAME - SR // 10)
-                    b = min(len(pend), (last + 1) * self.FRAME + SR // 10)
-                    yield t0 + a / SR, t0 + b / SR, pend[a:b].copy()
-                    cut = b if too_long else pos
-                    pend, t0, pos = pend[cut:], t0 + cut / SR, pos - cut
-                    pos -= pos % self.FRAME
-                    start = last = None
-            if start is None and len(pend) > SR * 2:
-                cut = len(pend) - SR // 2
-                cut -= cut % self.FRAME
-                pend, t0, pos = pend[cut:], t0 + cut / SR, max(0, pos - cut)
+            if len(pend) - checked < step:
+                continue
+            checked = len(pend)
+            while True:
+                spans = get_speech_timestamps(pend, opts, sampling_rate=SR)
+                if not spans:
+                    keep = SR // 2
+                    if len(pend) > keep:
+                        t0 += (len(pend) - keep) / SR
+                        pend = pend[-keep:]
+                    break
+                first, end = spans[0]["start"], spans[0]["end"]
+                if len(spans) > 1 or len(pend) - end >= self.PAUSE * SR:
+                    cut = min(end, first + int(self.MAX_SEG * SR))
+                elif len(pend) - first >= self.MAX_SEG * SR:
+                    cut = first + int(self.MAX_SEG * SR)
+                else:
+                    break
+                yield t0 + first / SR, t0 + cut / SR, pend[first:cut].copy()
+                t0 += cut / SR
+                pend = pend[cut:]
+            checked = len(pend)
 
     def _name_for(self, emb, duration, final):
         if emb is None or not np.all(np.isfinite(emb)):
