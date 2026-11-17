@@ -226,7 +226,7 @@ class Engine:
                 a, b = steps[step]
                 self.log(None, progress=a + (b - a) * completed / total)
 
-        kwargs = {"num_speakers": num_speakers} if num_speakers else {"min_speakers": 1, "max_speakers": 8}
+        kwargs = {"min_speakers": 1, "max_speakers": num_speakers or 8}
         wav = torch.from_numpy(normalize_loudness(audio))[None]
         out = pipe({"waveform": wav, "sample_rate": SR}, hook=hook, **kwargs)
         labels = out.speaker_diarization.labels()
@@ -234,7 +234,7 @@ class Engine:
         segs = [(t.start, t.end, lab) for t, _, lab in out.exclusive_speaker_diarization.itertracks(yield_label=True)]
         return segs, emb
 
-    def _merge_speakers(self, segs, emb, fixed_count):
+    def _merge_speakers(self, segs, emb):
         dur = {}
         for s, e, lab in segs:
             dur[lab] = dur.get(lab, 0.0) + e - s
@@ -256,29 +256,28 @@ class Engine:
             alias[drop] = keep
 
         valid = [l for l in dur if l in emb and np.all(np.isfinite(emb[l]))]
-        if not fixed_count:
-            changed = True
-            while changed:
-                changed = False
-                roots = sorted({root(l) for l in valid})
-                best = None
-                for i, a in enumerate(roots):
-                    for b in roots[i + 1:]:
-                        sim = cosine(emb[a], emb[b])
-                        if sim >= MERGE_SIM and (best is None or sim > best[0]):
-                            best = (sim, a, b)
-                if best:
-                    merge(best[1], best[2])
-                    changed = True
-            for lab in sorted({root(l) for l in valid}, key=lambda l: dur[l]):
-                if dur[lab] >= SHORT_SPK_SEC:
-                    continue
-                others = [o for o in {root(l) for l in valid} if o != lab]
-                if not others:
-                    continue
-                sim, target = max((cosine(emb[lab], emb[o]), o) for o in others)
-                if sim >= SHORT_MERGE_SIM:
-                    merge(target, lab)
+        changed = True
+        while changed:
+            changed = False
+            roots = sorted({root(l) for l in valid})
+            best = None
+            for i, a in enumerate(roots):
+                for b in roots[i + 1:]:
+                    sim = cosine(emb[a], emb[b])
+                    if sim >= MERGE_SIM and (best is None or sim > best[0]):
+                        best = (sim, a, b)
+            if best:
+                merge(best[1], best[2])
+                changed = True
+        for lab in sorted({root(l) for l in valid}, key=lambda l: dur[l]):
+            if dur[lab] >= SHORT_SPK_SEC:
+                continue
+            others = [o for o in {root(l) for l in valid} if o != lab]
+            if not others:
+                continue
+            sim, target = max((cosine(emb[lab], emb[o]), o) for o in others)
+            if sim >= SHORT_MERGE_SIM:
+                merge(target, lab)
         return [(s, e, root(lab) if lab in alias else lab) for s, e, lab in segs], {root(l): emb[root(l)] for l in valid}
 
     def _clean_segments(self, segs):
@@ -365,7 +364,7 @@ class Engine:
             minutes = len(audio) / SR / 60
             self.log(f"길이 {minutes:.1f}분")
             segs, emb = self._diarize(audio, num_speakers)
-            segs, emb = self._merge_speakers(segs, emb, bool(num_speakers))
+            segs, emb = self._merge_speakers(segs, emb)
             segs = self._clean_segments(self._name_speakers(segs, emb))
             self.load_asr()
             hints, fixes = read_glossary()
