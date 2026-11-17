@@ -391,6 +391,32 @@ class Engine:
 
 
 
+class Resampler:
+    BLOCK = 0.5
+
+    def __init__(self):
+        self.buf = None
+
+    def feed(self, samples: np.ndarray, rate: int) -> np.ndarray:
+        if rate == SR:
+            return samples
+        from math import ceil, gcd
+        from scipy.signal import resample_poly
+        g = gcd(SR, rate)
+        up, down = SR // g, rate // g
+        pad = down * ceil(300 / down)
+        block = down * ceil(rate * self.BLOCK / down)
+        if self.buf is None:
+            self.buf = np.zeros(pad, np.float32)
+        self.buf = np.concatenate([self.buf, samples])
+        out = []
+        while len(self.buf) >= pad + block + pad:
+            y = resample_poly(self.buf[:pad + block + pad], up, down)
+            out.append(y[pad * up // down:(pad + block) * up // down])
+            self.buf = self.buf[block:]
+        return np.concatenate(out).astype(np.float32) if out else np.zeros(0, np.float32)
+
+
 class LiveTranscriber:
     FRAME = SR * 30 // 1000
     PAUSE = 0.35
@@ -414,12 +440,13 @@ class LiveTranscriber:
         self.mine = np.load(voice_profile_path()) if voice_profile_path().exists() else None
         self.recent = []
         self.fed = 0.0
+        self.resampler = Resampler()
         threading.Thread(target=self._run, daemon=True).start()
 
     def feed(self, samples: np.ndarray, rate: int):
-        if rate != SR:
-            n = int(len(samples) * SR / rate)
-            samples = np.interp(np.linspace(0, len(samples) - 1, n), np.arange(len(samples)), samples)
+        samples = self.resampler.feed(samples.astype(np.float32), rate)
+        if not len(samples):
+            return
         with self.cond:
             self.incoming.append(samples.astype(np.float32))
             self.fed += len(samples) / SR
@@ -537,7 +564,7 @@ class LiveTranscriber:
                     if turn["len"] < self.MIN_AUDIO:
                         continue
                     prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
-                    turn["text"] = eng._render_text(eng._transcribe_piece(turn["audio"], prompt, fast=True), fixes)
+                    turn["text"] = eng._render_text(eng._transcribe_piece(turn["audio"], prompt, fast=eng.backend == "cpu"), fixes)
                 except Exception as e:
                     self.on_status(f"실시간 받아쓰기 오류: {e}")
                     continue
