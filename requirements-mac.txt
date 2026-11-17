@@ -1,0 +1,9 @@
+torch
+torchaudio
+pyannote.audio==4.0.7
+faster-whisper==1.2.1
+mlx-whisper
+av
+numpy
+sounddevice
+huggingface_hub
