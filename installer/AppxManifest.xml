@@ -3,10 +3,10 @@
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
          IgnorableNamespaces="uap rescap">
-  <Identity Name="__NAME__" Publisher="__PUBLISHER__" Version="__VERSION__.0" ProcessorArchitecture="x64"/>
+  <Identity Name="TheVR.499907AE1C132" Publisher="CN=9BD427C1-F4E9-4956-A55A-8E65A73F736C" Version="__VERSION__.0" ProcessorArchitecture="x64"/>
   <Properties>
     <DisplayName>모두의 회의록</DisplayName>
-    <PublisherDisplayName>__PUBLISHER_DISPLAY__</PublisherDisplayName>
+    <PublisherDisplayName>TheVR</PublisherDisplayName>
     <Logo>msix\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>

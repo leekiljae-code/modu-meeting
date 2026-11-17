@@ -356,6 +356,14 @@ class Api:
             return f"삭제 실패: {e}"
         return True
 
+    def open_recording(self, path):
+        source = parse_transcript(Path(path))["meta"].get("source")
+        rec = output_dir() / "녹음" / source if source else None
+        if not rec or not rec.is_file():
+            return "원본 녹음 파일이 없습니다 (불러온 파일은 원래 위치에 있습니다)"
+        open_path(rec)
+        return True
+
     def copy_text(self, path):
         text = Path(path).read_text(encoding="utf-8")
         try:

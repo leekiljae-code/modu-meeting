@@ -54,10 +54,9 @@ jobs:
           $v = (Select-String -Path app\version.py -Pattern 'VERSION = "([^"]+)"').Matches[0].Groups[1].Value
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$v" installer\windows.iss
       - name: Make Store package (MSIX)
-        if: ${{ vars.MSIX_NAME != '' }}
         run: |
           $v = (Select-String -Path app\version.py -Pattern 'VERSION = "([^"]+)"').Matches[0].Groups[1].Value
-          $m = (Get-Content installer\AppxManifest.xml -Raw -Encoding UTF8).Replace("__NAME__", "${{ vars.MSIX_NAME }}").Replace("__PUBLISHER__", "${{ vars.MSIX_PUBLISHER }}").Replace("__PUBLISHER_DISPLAY__", "${{ vars.MSIX_PUBLISHER_DISPLAY }}").Replace("__VERSION__", $v)
+          $m = (Get-Content installer\AppxManifest.xml -Raw -Encoding UTF8).Replace("__VERSION__", $v)
           [IO.File]::WriteAllText("dist\ModuMeeting\AppxManifest.xml", $m, (New-Object Text.UTF8Encoding $false))
           Copy-Item -Recurse installer\msix dist\ModuMeeting\msix
           $tool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter makeappx.exe | Where-Object { $_.FullName -match "x64" } | Sort-Object FullName | Select-Object -Last 1
@@ -67,7 +66,6 @@ jobs:
           name: windows
           path: ModuMeeting-windows-setup.exe
       - uses: actions/upload-artifact@v4
-        if: ${{ vars.MSIX_NAME != '' }}
         with:
           name: store
           path: ModuMeeting-store.msix

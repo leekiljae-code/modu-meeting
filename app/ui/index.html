@@ -257,6 +257,7 @@ p.pg{color:var(--sub);margin-bottom:22px}
           <h4>참석자 이름 변경</h4>
           <div id="spk"></div>
           <button class="btn pri" id="res-copy" style="margin-top:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>전체 복사</button>
+          <button class="btn sec" id="res-audio">원본 녹음 듣기</button>
           <button class="btn sec" id="res-open">텍스트 파일 열기</button>
           <button class="btn sec" id="res-folder">저장 폴더 열기</button>
           <button class="btn sec danger" id="res-del">회의록 삭제</button>
@@ -426,6 +427,7 @@ async function openResult(p){
 }
 $("#res-copy").onclick=async()=>{const t=await api.copy_text(current.path);if(t===true){toast("클립보드에 복사됨");return;}try{await navigator.clipboard.writeText(t);toast("클립보드에 복사됨");}catch(e){toast("복사 실패");}};
 $("#res-open").onclick=()=>api.open_path(current.path);
+$("#res-audio").onclick=async()=>{const r=await api.open_recording(current.path);if(r!==true)toast(r);};
 let delPath=null;
 function askDelete(p,title){delPath=p;$("#del-name").textContent=title;$("#m-delete").classList.add("on");}
 $("#res-del").onclick=()=>askDelete(current.path,current.title);
