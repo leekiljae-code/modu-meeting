@@ -306,7 +306,7 @@ class Engine:
                 names[lab] = f"화자{n}"
         return [(s, e, names[lab]) for s, e, lab in segs]
 
-    def _transcribe_piece(self, audio, prompt):
+    def _transcribe_piece(self, audio, prompt, fast=False):
         common = dict(language="ko", initial_prompt=prompt or None, word_timestamps=True,
                       condition_on_previous_text=False, compression_ratio_threshold=2.4,
                       no_speech_threshold=0.6, hallucination_silence_threshold=2.0)
@@ -319,7 +319,7 @@ class Engine:
                                 [w.get("word", "") for w in seg.get("words", [])],
                                 seg.get("compression_ratio", 0), seg.get("no_speech_prob", 0), seg.get("avg_logprob", 0)))
         else:
-            segments, _ = self.asr.transcribe(audio, log_prob_threshold=-1.0, beam_size=5, vad_filter=False, **common)
+            segments, _ = self.asr.transcribe(audio, log_prob_threshold=-1.0, beam_size=1 if fast else 5, vad_filter=False, **common)
             for seg in segments:
                 words = seg.words or []
                 results.append((seg.text, [w.probability for w in words], [w.word for w in words],
@@ -384,31 +384,36 @@ class Engine:
 
 
 class LiveTranscriber:
-    CHUNK_SEC = 20
-    MATCH_SIM = 0.55
+    FRAME = SR * 30 // 1000
+    END_SILENCE = 0.35
+    MAX_UTTER = 15.0
+    MIN_UTTER = 0.8
+    MATCH_SIM = 0.5
+    NEW_SPEAKER_MIN = 3.0
+    MAX_LAG = 45.0
 
-    def __init__(self, engine: Engine, on_lines, on_status):
+    def __init__(self, engine: Engine, on_lines, on_status, num_speakers=None):
         self.engine = engine
         self.on_lines = on_lines
         self.on_status = on_status
-        self.buffer = []
-        self.buffered = 0
-        self.offset = 0.0
+        self.max_speakers = num_speakers
+        self.incoming = []
+        self.cond = threading.Condition()
+        self.stop_event = threading.Event()
         self.centroids = {}
+        self.last_name = None
         self.mine = np.load(voice_profile_path()) if voice_profile_path().exists() else None
         self.recent = []
-        self.stop_event = threading.Event()
-        self.cond = threading.Condition()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
+        self.fed = 0.0
+        threading.Thread(target=self._run, daemon=True).start()
 
     def feed(self, samples: np.ndarray, rate: int):
         if rate != SR:
             n = int(len(samples) * SR / rate)
             samples = np.interp(np.linspace(0, len(samples) - 1, n), np.arange(len(samples)), samples)
         with self.cond:
-            self.buffer.append(samples.astype(np.float32))
-            self.buffered += len(samples)
+            self.incoming.append(samples.astype(np.float32))
+            self.fed += len(samples) / SR
             self.cond.notify()
 
     def stop(self):
@@ -416,29 +421,66 @@ class LiveTranscriber:
         with self.cond:
             self.cond.notify()
 
-    def _take(self):
+    def _pull(self):
         with self.cond:
-            while self.buffered < SR * self.CHUNK_SEC and not self.stop_event.is_set():
-                self.cond.wait(1)
-            if self.stop_event.is_set():
-                return None
-            chunk = np.concatenate(self.buffer)
-            self.buffer, self.buffered = [], 0
-            keep = SR * self.CHUNK_SEC * 3
-            if len(chunk) > keep:
-                self.offset += (len(chunk) - keep) / SR
-                chunk = chunk[-keep:]
-            return chunk
+            while not self.incoming and not self.stop_event.is_set():
+                self.cond.wait(0.5)
+            data, self.incoming = self.incoming, []
+        return np.concatenate(data) if data else None
 
-    def _name_for(self, emb):
+    def _utterances(self):
+        pend = np.zeros(0, np.float32)
+        t0 = 0.0
+        pos = 0
+        floor = 0.003
+        start = None
+        last = None
+        silence_end = int(self.END_SILENCE * SR / self.FRAME)
+        while not self.stop_event.is_set():
+            new = self._pull()
+            if new is None:
+                continue
+            pend = np.concatenate([pend, new])
+            while pos + self.FRAME <= len(pend):
+                frame = pend[pos:pos + self.FRAME]
+                rms = float(np.sqrt(np.mean(frame ** 2)))
+                speech = rms > max(0.006, floor * 3)
+                if not speech:
+                    floor = floor * 0.97 + rms * 0.03
+                idx = pos // self.FRAME
+                if speech:
+                    start = idx if start is None else start
+                    last = idx
+                pos += self.FRAME
+                if start is None:
+                    continue
+                long_enough = (idx - start) * self.FRAME >= self.MAX_UTTER * SR
+                if idx - last >= silence_end or long_enough:
+                    a = max(0, start * self.FRAME - SR // 5)
+                    b = min(len(pend), (last + 1) * self.FRAME + SR // 5)
+                    yield t0 + a / SR, pend[a:b].copy()
+                    cut = b if long_enough else pos
+                    pend, t0, pos = pend[cut:], t0 + cut / SR, pos - cut
+                    pos -= pos % self.FRAME
+                    start = last = None
+            if start is None and len(pend) > SR * 2:
+                cut = len(pend) - SR // 2
+                cut -= cut % self.FRAME
+                pend, t0, pos = pend[cut:], t0 + cut / SR, max(0, pos - cut)
+
+    def _name_for(self, emb, duration):
         if emb is None or not np.all(np.isfinite(emb)):
-            return None
-        if self.mine is not None and cosine(self.mine, emb) >= MY_VOICE_SIM:
-            return "나"
-        if self.centroids:
-            sim, name = max((cosine(c, emb), n) for n, c in self.centroids.items())
-            if sim >= self.MATCH_SIM:
-                self.centroids[name] = self.centroids[name] * 0.8 + emb * 0.2
+            return self.last_name or "화자1"
+        known = dict(self.centroids)
+        if self.mine is not None:
+            known["나"] = self.mine
+        others = self.max_speakers - (1 if self.mine is not None else 0) if self.max_speakers else None
+        if known:
+            sim, name = max((cosine(c, emb), n) for n, c in known.items())
+            full = others is not None and len(self.centroids) >= others
+            if sim >= self.MATCH_SIM or full or duration < self.NEW_SPEAKER_MIN:
+                if name != "나":
+                    self.centroids[name] = self.centroids[name] * 0.85 + emb * 0.15
                 return name
         name = f"화자{len(self.centroids) + 1}"
         self.centroids[name] = emb
@@ -448,43 +490,35 @@ class LiveTranscriber:
         import torch
         eng = self.engine
         try:
-            self.on_status("실시간 받아쓰기 준비 중…")
-            eng.load_diarizer()
-            eng.load_asr()
+            with eng.lock:
+                eng.load_diarizer()
+                eng.load_asr()
             self.on_status("듣는 중")
         except Exception as e:
-            self.on_status(f"실시간 미리보기를 쓸 수 없어요 ({e})")
+            self.on_status(f"실시간 받아쓰기를 사용할 수 없습니다 ({e})")
             return
         hints, fixes = read_glossary()
-        while True:
-            chunk = self._take()
-            if chunk is None:
-                return
-            start = self.offset
-            self.offset += len(chunk) / SR
-            if np.sqrt(np.mean(chunk ** 2)) < 0.002:
+        for start, audio in self._utterances():
+            if len(audio) < self.MIN_UTTER * SR:
+                continue
+            if self.fed - (start + len(audio) / SR) > self.MAX_LAG:
+                self.on_status("처리가 밀려 일부 구간을 건너뜁니다")
                 continue
             with eng.lock:
                 if self.stop_event.is_set():
                     return
                 try:
-                    out = eng.pipeline({"waveform": torch.from_numpy(normalize_loudness(chunk))[None], "sample_rate": SR},
-                                       min_speakers=1, max_speakers=6)
-                    index = {lab: i for i, lab in enumerate(out.speaker_diarization.labels())}
-                    tracks = sorted((t.start, t.end, lab) for t, _, lab in out.exclusive_speaker_diarization.itertracks(yield_label=True))
-                    names = {}
-                    for _, _, lab in tracks:
-                        if lab not in names:
-                            names[lab] = self._name_for(out.speaker_embeddings[index[lab]]) if lab in index else None
-                    segs = [(s, e, names.get(lab) or "화자?") for s, e, lab in tracks]
-                    lines = []
-                    for s, e, name in eng._clean_segments(segs):
-                        prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
-                        text = eng._render_text(eng._transcribe_piece(chunk[int(s * SR):int(e * SR)], prompt), fixes)
-                        if text:
-                            lines.append({"t": fmt_time(start + s), "who": name, "text": text})
-                            self.recent.append(text)
-                    if lines:
-                        self.on_lines(lines)
+                    emb = None
+                    if len(audio) >= SR:
+                        e = np.asarray(eng.pipeline._embedding(torch.from_numpy(normalize_loudness(audio))[None, None])).reshape(-1)
+                        emb = e / (np.linalg.norm(e) + 1e-10)
+                    name = self._name_for(emb, len(audio) / SR)
+                    prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
+                    text = eng._render_text(eng._transcribe_piece(audio, prompt, fast=True), fixes)
                 except Exception as e:
-                    self.on_status(f"실시간 미리보기 오류: {e}")
+                    self.on_status(f"실시간 받아쓰기 오류: {e}")
+                    continue
+            if text:
+                self.last_name = name
+                self.recent.append(text)
+                self.on_lines([{"t": fmt_time(start), "who": name, "text": text}])

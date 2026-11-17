@@ -257,6 +257,7 @@ class Api:
                 self._engine(),
                 on_lines=lambda lines: self._emit({"type": "live", "lines": lines}),
                 on_status=lambda msg: self._emit({"type": "live_status", "msg": msg}),
+                num_speakers=count,
             )
             self._recorder.start(path, listener=self._live.feed)
         except Exception as e:
