@@ -1,38 +1,24 @@
+import json
 import multiprocessing
 import os
 import queue
+import re
 import subprocess
+import sys
 import threading
 import time
 import traceback
 import wave
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox
 
-import customtkinter as ctk
+import webview
 
-from paths import APP_NAME, IS_MAC, IS_WIN, glossary_path, output_dir, voice_profile_path
+from paths import APP_NAME, IS_MAC, IS_WIN, glossary_path, output_dir, resource_dir, voice_profile_path
 
 VERSION = "1.0.0"
-AUDIO_TYPES = [("녹음 파일", "*.m4a *.mp3 *.wav *.aac *.flac *.ogg *.opus *.mp4 *.mov *.webm *.wma *.amr"), ("모든 파일", "*.*")]
-NOTICE = (
-    "모두의 회의록은 무료 프로그램입니다.\n\n"
-    "• 모든 처리는 이 컴퓨터 안에서만 이뤄지며, 녹음과 텍스트는 어디에도 전송되지 않습니다.\n"
-    "• 내가 참여한 대화를 녹음하는 것은 괜찮지만, 내가 빠진 다른 사람들의 대화를 몰래 녹음하면 "
-    "통신비밀보호법 위반이 됩니다.\n"
-    "• 처음 사용할 때 AI 모델(약 1.6~3GB)을 한 번 내려받습니다."
-)
-FONT = "Apple SD Gothic Neo" if IS_MAC else ("Malgun Gothic" if IS_WIN else "NanumGothic")
-ACCENT = ("#0f8f88", "#14a39b")
-ACCENT_HOVER = ("#0b7570", "#0f8f88")
-REC = ("#e5484d", "#e5484d")
-REC_HOVER = ("#c9373c", "#c9373c")
-CARD = ("#ffffff", "#1f2124")
-BG = ("#f3f5f7", "#141517")
-MUTED = ("#6b7280", "#9ca3af")
-SUBTLE = ("#eef1f4", "#2a2d31")
-COUNTS = ["자동", "2", "3", "4", "5", "6", "7", "8"]
+AUDIO_EXT = ("m4a", "mp3", "wav", "aac", "flac", "ogg", "opus", "mp4", "mov", "webm", "wma", "amr")
+LINE_RE = re.compile(r"^\[(\d\d:\d\d:\d\d)\] \[([^\]]+)\] (.*)$")
 
 
 def open_path(p):
@@ -45,8 +31,11 @@ def open_path(p):
         subprocess.Popen(["xdg-open", p])
 
 
-def font(size, weight="normal"):
-    return ctk.CTkFont(family=FONT, size=size, weight=weight)
+def ui_path() -> str:
+    for base in (resource_dir() / "app" / "ui", resource_dir() / "ui", Path(__file__).resolve().parent / "ui"):
+        if (base / "index.html").exists():
+            return str(base / "index.html")
+    raise FileNotFoundError("ui/index.html")
 
 
 class Recorder:
@@ -56,14 +45,19 @@ class Recorder:
         self.path = None
         self.level = 0.0
         self.started = 0.0
+        self.rate = 16000
+        self.listener = None
 
-    def start(self, path: Path):
+    def start(self, path: Path, listener=None):
         import numpy as np
         import sounddevice as sd
 
         def callback(indata, frames, t, status):
-            self.wav.writeframes((np.clip(indata[:, 0], -1, 1) * 32767).astype("<i2").tobytes())
-            self.level = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
+            mono = indata[:, 0]
+            self.wav.writeframes((np.clip(mono, -1, 1) * 32767).astype("<i2").tobytes())
+            self.level = float(np.sqrt(np.mean(mono ** 2)))
+            if self.listener:
+                self.listener(mono.copy(), self.rate)
 
         last_error = None
         for rate in (16000, 48000, 44100):
@@ -72,6 +66,8 @@ class Recorder:
                 self.wav.setnchannels(1)
                 self.wav.setsampwidth(2)
                 self.wav.setframerate(rate)
+                self.rate = rate
+                self.listener = listener
                 self.stream = sd.InputStream(samplerate=rate, channels=1, dtype="float32", callback=callback)
                 self.stream.start()
                 self.path = path
@@ -82,13 +78,14 @@ class Recorder:
                 if self.wav:
                     self.wav.close()
                 path.unlink(missing_ok=True)
-        raise RuntimeError(f"마이크를 열 수 없습니다: {last_error}")
+        raise RuntimeError(f"마이크를 열 수 없어요. 마이크 사용 권한을 확인해 주세요. ({last_error})")
 
     def stop(self) -> Path:
         self.stream.stop()
         self.stream.close()
         self.wav.close()
         self.stream = None
+        self.listener = None
         return self.path
 
     @property
@@ -96,238 +93,256 @@ class Recorder:
         return self.stream is not None
 
 
-class App:
-    def __init__(self, root: ctk.CTk):
-        self.root = root
-        self.events = queue.Queue()
-        self.jobs = queue.Queue()
-        self.engine = None
-        self.recorder = Recorder()
-        self.voice_recorder = Recorder()
-        self.last_output = None
+def parse_transcript(path: Path) -> dict:
+    meta, lines = {}, []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.startswith("# 원본:"):
+            meta["source"] = raw.split(":", 1)[1].strip()
+        elif raw.startswith("# 길이:"):
+            m = re.search(r"(\d+)분.*?(\d+)명", raw)
+            if m:
+                meta["minutes"], meta["count"] = int(m.group(1)), int(m.group(2))
+        else:
+            m = LINE_RE.match(raw)
+            if m:
+                lines.append({"t": m.group(1), "who": m.group(2), "text": m.group(3)})
+    speakers = []
+    for l in lines:
+        if l["who"] not in speakers:
+            speakers.append(l["who"])
+    speakers.sort(key=lambda s: (s != "나", s))
+    return {"meta": meta, "lines": lines, "speakers": speakers}
 
-        root.title(f"{APP_NAME} {VERSION}")
-        root.geometry("560x760")
-        root.minsize(480, 640)
-        root.configure(fg_color=BG)
 
-        page = ctk.CTkFrame(root, fg_color="transparent")
-        page.pack(fill="both", expand=True, padx=22, pady=20)
+def title_of(path: Path) -> str:
+    stem = re.sub(r"^\d{4}-\d{2}-\d{2}_\d{4}_", "", path.stem)
+    m = re.match(r"회의_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}$", stem)
+    return f"{int(m.group(2))}월 {int(m.group(3))}일 {m.group(4)}:{m.group(5)} 회의" if m else stem
 
-        head = ctk.CTkFrame(page, fg_color="transparent")
-        head.pack(fill="x")
-        ctk.CTkLabel(head, text=APP_NAME, font=font(24, "bold")).pack(anchor="w")
-        ctk.CTkLabel(head, text="말한 사람별로 정리되는 무료 회의록 · 내 컴퓨터 안에서만 처리", font=font(13), text_color=MUTED).pack(anchor="w")
 
-        rec_card = self.card(page, pady=(16, 0))
-        ctk.CTkLabel(rec_card, text="참석자 수", font=font(13, "bold")).pack(anchor="w")
-        ctk.CTkLabel(rec_card, text="알면 골라 주세요. 더 정확해집니다", font=font(12), text_color=MUTED).pack(anchor="w")
-        self.count = ctk.CTkSegmentedButton(
-            rec_card, values=COUNTS, font=font(13), height=34,
-            fg_color=SUBTLE, unselected_color=SUBTLE, unselected_hover_color=("#e2e6ea", "#34383d"),
-            selected_color=ACCENT, selected_hover_color=ACCENT_HOVER, text_color=("#111827", "#e5e7eb"),
-        )
-        self.count.set("자동")
-        self.count.pack(fill="x", pady=(8, 18))
+def date_of(path: Path) -> str:
+    d = datetime.fromtimestamp(path.stat().st_mtime)
+    return f"{d.year}. {d.month}. {d.day}. {'오전' if d.hour < 12 else '오후'} {(d.hour % 12) or 12}:{d.minute:02d}"
 
-        self.timer = ctk.CTkLabel(rec_card, text="00:00:00", font=ctk.CTkFont(family="Consolas" if IS_WIN else FONT, size=40, weight="bold"))
-        self.timer.pack()
-        self.level = ctk.CTkProgressBar(rec_card, height=6, fg_color=SUBTLE, progress_color=REC)
-        self.level.set(0)
-        self.level.pack(fill="x", padx=40, pady=(4, 16))
-        self.rec_btn = ctk.CTkButton(
-            rec_card, text="●   녹음 시작", font=font(17, "bold"), height=54, corner_radius=27,
-            fg_color=REC, hover_color=REC_HOVER, command=self.toggle_record,
-        )
-        self.rec_btn.pack(fill="x")
-        ctk.CTkButton(
-            rec_card, text="녹음 파일 불러오기  (스마트폰 녹음 등)", font=font(14), height=42, corner_radius=21,
-            fg_color="transparent", border_width=1, border_color=SUBTLE, text_color=("#111827", "#e5e7eb"),
-            hover_color=SUBTLE, command=self.pick_files,
-        ).pack(fill="x", pady=(10, 0))
 
-        tools = ctk.CTkFrame(page, fg_color="transparent")
-        tools.pack(fill="x", pady=(12, 0))
-        tools.grid_columnconfigure((0, 1, 2), weight=1, uniform="t")
-        self.voice_btn = self.tool_button(tools, "내 목소리 등록", self.toggle_voice, 0)
-        self.tool_button(tools, "용어집", lambda: open_path(glossary_path()), 1)
-        self.tool_button(tools, "결과 폴더", lambda: open_path(output_dir()), 2)
-        self.voice_state = ctk.CTkLabel(page, font=font(12), text_color=MUTED)
-        self.voice_state.pack(anchor="w", pady=(6, 0))
-        self.refresh_voice_state()
+class Api:
+    def __init__(self):
+        self._window = None
+        self._engine_obj = None
+        self._jobs = queue.Queue()
+        self._recorder = Recorder()
+        self._voice_recorder = Recorder()
+        self._live = None
+        self._current = None
+        self._lock = threading.Lock()
+        threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._pump, daemon=True).start()
 
-        status_card = self.card(page, pady=(10, 0), expand=True)
-        self.status = ctk.CTkLabel(status_card, text="준비됨", font=font(14, "bold"), anchor="w")
-        self.status.pack(fill="x")
-        self.progress = ctk.CTkProgressBar(status_card, height=8, fg_color=SUBTLE, progress_color=ACCENT)
-        self.progress.set(0)
-        self.progress.pack(fill="x", pady=(8, 10))
-        self.open_btn = ctk.CTkButton(
-            status_card, text="결과 열기", font=font(14, "bold"), height=42, corner_radius=21,
-            fg_color=ACCENT, hover_color=ACCENT_HOVER, state="disabled", command=self.open_last,
-        )
-        self.open_btn.pack(side="bottom", fill="x", pady=(10, 0))
-        self.logbox = ctk.CTkTextbox(status_card, height=90, font=font(12), fg_color=SUBTLE, corner_radius=10, wrap="word", state="disabled")
-        self.logbox.pack(fill="both", expand=True)
+    def _emit(self, event: dict):
+        if self._window:
+            try:
+                self._window.evaluate_js(f"window.onEvent && onEvent({json.dumps(event, ensure_ascii=False)})")
+            except Exception:
+                pass
 
-        threading.Thread(target=self.worker, daemon=True).start()
-        root.after(100, self.poll)
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
-        root.after(300, self.first_run)
+    def _engine(self):
+        with self._lock:
+            if self._engine_obj is None:
+                from engine import Engine
+                self._engine_obj = Engine(self._engine_log)
+            return self._engine_obj
 
-    def card(self, parent, pady, expand=False):
-        outer = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=16)
-        outer.pack(fill="both" if expand else "x", expand=expand, pady=pady)
-        inner = ctk.CTkFrame(outer, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=18, pady=16)
-        return inner
+    def _engine_log(self, msg=None, progress=None, done=None):
+        job = self._current
+        if not job:
+            return
+        if msg:
+            if msg.startswith("받아쓰기 "):
+                job["step"], job["msg"] = 1, f"받아쓰기 {msg.split(' ', 1)[1]} 구간"
+            elif msg.startswith("화자 분리"):
+                job["step"], job["msg"] = 0, "목소리로 화자를 구분하는 중"
+            elif not msg.startswith(("처리 시작", "길이", "완료")):
+                job["msg"] = msg
+        if progress is not None:
+            job["pct"] = progress * 0.35 if job["step"] == 0 else 0.35 + progress * 0.65
+        job["queue"] = self._jobs.qsize()
+        self._emit({"type": "job", "job": job})
 
-    def tool_button(self, parent, text, command, col):
-        b = ctk.CTkButton(
-            parent, text=text, font=font(13), height=38, corner_radius=12,
-            fg_color=CARD, hover_color=SUBTLE, text_color=("#111827", "#e5e7eb"), command=command,
-        )
-        b.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 4, 0 if col == 2 else 4))
-        return b
-
-    def first_run(self):
-        flag = output_dir() / ".notice_ok"
-        if not flag.exists():
-            messagebox.showinfo(APP_NAME, NOTICE)
-            flag.write_text("ok")
-
-    def log(self, msg=None, progress=None, done=None):
-        self.events.put((msg, progress, done))
-
-    def poll(self):
-        try:
-            while True:
-                msg, progress, done = self.events.get_nowait()
-                if msg:
-                    self.status.configure(text=msg)
-                    if not msg.startswith("받아쓰기 ") and "내려받는 중" not in msg:
-                        self.append(msg)
-                if progress is not None:
-                    self.progress.set(progress)
-                if done:
-                    self.last_output = done
-                    self.open_btn.configure(state="normal")
-        except queue.Empty:
-            pass
-        for rec in (self.recorder, self.voice_recorder):
-            if rec.active:
-                self.level.set(min(rec.level * 8, 1.0))
-                el = int(time.time() - rec.started)
-                self.timer.configure(text=f"{el // 3600:02d}:{el % 3600 // 60:02d}:{el % 60:02d}")
-        self.root.after(100, self.poll)
-
-    def append(self, msg):
-        self.logbox.configure(state="normal")
-        self.logbox.insert("end", f"{datetime.now():%H:%M}  {msg}\n")
-        self.logbox.see("end")
-        self.logbox.configure(state="disabled")
-
-    def get_engine(self):
-        if self.engine is None:
-            self.log("AI 엔진 불러오는 중…")
-            from engine import Engine
-            self.engine = Engine(self.log)
-        return self.engine
-
-    def worker(self):
+    def _worker(self):
         while True:
-            kind, path, count = self.jobs.get()
+            kind, path, count = self._jobs.get()
             try:
                 if kind == "voice":
-                    self.get_engine().register_voice(path)
-                    self.root.after(0, self.refresh_voice_state)
-                else:
-                    self.get_engine().process(path, count)
+                    self._engine().register_voice(path)
+                    self._emit({"type": "voice"})
+                    continue
+                self._current = {"name": Path(path).name, "msg": "준비 중", "pct": 0, "step": 0, "queue": self._jobs.qsize()}
+                self._emit({"type": "job", "job": self._current})
+                out = self._engine().process(path, count)
+                self._current = None
+                self._emit({"type": "done", "path": str(out)})
             except Exception as e:
                 traceback.print_exc()
-                self.log(f"오류: {e}", progress=0)
-            if self.jobs.empty():
-                self.log("대기 중 — 다른 작업이 없습니다")
+                self._current = None
+                self._emit({"type": "error", "msg": f"처리하지 못했어요: {e}"})
 
-    def selected_count(self):
-        v = self.count.get()
-        return None if v == "자동" else int(v)
+    def _pump(self):
+        while True:
+            time.sleep(0.1)
+            for rec, voice in ((self._recorder, False), (self._voice_recorder, True)):
+                if rec.active:
+                    self._emit({"type": "level", "voice": voice, "level": rec.level, "elapsed": time.time() - rec.started})
 
-    def toggle_record(self):
-        if self.voice_recorder.active:
-            return
-        if self.recorder.active:
-            path = self.recorder.stop()
-            self.rec_btn.configure(text="●   녹음 시작", fg_color=REC, hover_color=REC_HOVER)
-            self.level.set(0)
-            self.append(f"녹음 저장: {path.name}")
-            self.jobs.put(("meeting", path, self.selected_count()))
-            return
+    def get_state(self):
+        recent = []
+        for p in sorted(output_dir().glob("*.txt"), key=lambda x: x.stat().st_mtime, reverse=True)[:50]:
+            if p.name == "용어.txt":
+                continue
+            try:
+                info = parse_transcript(p)
+            except Exception:
+                continue
+            src = info["meta"].get("source", "")
+            recent.append({
+                "path": str(p), "title": title_of(p), "date": date_of(p),
+                "kind": "rec" if src.startswith("회의_") else "file",
+                "minutes": info["meta"].get("minutes", 0), "speakers": len(info["speakers"]),
+            })
+        return {
+            "voice": voice_profile_path().exists(), "notice": (output_dir() / ".notice_ok").exists(),
+            "version": VERSION, "engine": "Apple 실리콘 가속" if IS_MAC else "Windows", "recent": recent,
+            "job": self._current,
+        }
+
+    def notice_ok(self):
+        (output_dir() / ".notice_ok").write_text("ok")
+
+    def start_record(self, count=None):
+        if self._recorder.active or self._voice_recorder.active:
+            return "이미 녹음 중이에요"
         path = output_dir() / "녹음" / f"회의_{datetime.now():%Y%m%d_%H%M%S}.wav"
         try:
-            self.recorder.start(path)
+            from engine import LiveTranscriber
+            self._live = LiveTranscriber(
+                self._engine(),
+                on_lines=lambda lines: self._emit({"type": "live", "lines": lines}),
+                on_status=lambda msg: self._emit({"type": "live_status", "msg": msg}),
+            )
+            self._recorder.start(path, listener=self._live.feed)
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"{e}\n\n시스템 설정에서 이 프로그램의 마이크 사용을 허용해 주세요.")
-            return
-        self.rec_btn.configure(text="■   녹음 정지  ·  정지하면 바로 텍스트로", fg_color=("#111827", "#374151"), hover_color=("#000000", "#4b5563"))
-        self.append("녹음 시작")
+            if self._live:
+                self._live.stop()
+                self._live = None
+            return str(e)
+        return True
 
-    def pick_files(self):
-        files = filedialog.askopenfilenames(title="녹음 파일 선택", filetypes=AUDIO_TYPES)
+    def stop_record(self, count=None):
+        if not self._recorder.active:
+            return False
+        if self._live:
+            self._live.stop()
+            self._live = None
+        self._jobs.put(("meeting", self._recorder.stop(), count))
+        return True
+
+    def cancel_record(self):
+        if self._live:
+            self._live.stop()
+            self._live = None
+        if self._recorder.active:
+            path = self._recorder.stop()
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        return True
+
+    def pick_files(self, count=None):
+        types = ("녹음 파일 (" + ";".join(f"*.{e}" for e in AUDIO_EXT) + ")", "모든 파일 (*.*)")
+        files = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=types) or []
         for f in files:
-            self.append(f"대기열 추가: {Path(f).name}")
-            self.jobs.put(("meeting", Path(f), self.selected_count()))
+            self._jobs.put(("meeting", Path(f), count))
+        return len(files)
 
-    def toggle_voice(self):
-        if self.recorder.active:
-            return
-        if self.voice_recorder.active:
-            path = self.voice_recorder.stop()
-            self.voice_btn.configure(text="내 목소리 등록", fg_color=CARD, text_color=("#111827", "#e5e7eb"))
-            self.level.set(0)
-            self.jobs.put(("voice", path, None))
-            return
-        if not messagebox.askokcancel(
-            APP_NAME,
-            "혼자 있는 조용한 곳에서 평소 말투로 20초 이상 말한 뒤 '등록 끝내기'를 누르세요.\n"
-            "(예: 자기소개, 오늘 한 일)\n\n등록하면 결과에서 내 말은 [나]로 표시됩니다.",
-        ):
-            return
-        path = output_dir() / "녹음" / "내목소리.wav"
+    def read_transcript(self, path):
+        p = Path(path)
+        info = parse_transcript(p)
+        return {
+            "path": str(p), "title": title_of(p), "date": date_of(p),
+            "minutes": info["meta"].get("minutes", 0), "speakers": info["speakers"], "lines": info["lines"],
+        }
+
+    def rename_speaker(self, path, old, new):
+        p = Path(path)
+        new = new.replace("[", "").replace("]", "").strip()
+        text = p.read_text(encoding="utf-8")
+        text = re.sub(rf"(?m)^(\[\d\d:\d\d:\d\d\]) \[{re.escape(old)}\] ", lambda m: f"{m.group(1)} [{new}] ", text)
+        p.write_text(text, encoding="utf-8")
+        return True
+
+    def copy_text(self, path):
+        text = Path(path).read_text(encoding="utf-8")
         try:
-            self.voice_recorder.start(path)
+            if IS_WIN:
+                subprocess.run(["clip"], input=text.encode("utf-16le"), check=True, creationflags=0x08000000)
+                return True
+            if IS_MAC:
+                subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+                return True
+        except Exception:
+            pass
+        return text
+
+    def open_path(self, path):
+        open_path(path)
+
+    def open_folder(self):
+        open_path(output_dir())
+
+    def voice_start(self):
+        if self._recorder.active or self._voice_recorder.active:
+            return "녹음 중에는 등록할 수 없어요"
+        try:
+            self._voice_recorder.start(output_dir() / "녹음" / "내목소리.wav")
         except Exception as e:
-            messagebox.showerror(APP_NAME, str(e))
-            return
-        self.voice_btn.configure(text="■ 등록 끝내기", fg_color=REC, text_color="#ffffff")
+            return str(e)
+        return True
 
-    def refresh_voice_state(self):
-        self.voice_state.configure(
-            text="✓ 내 목소리 등록됨 — 결과에 [나]로 표시됩니다" if voice_profile_path().exists() else "내 목소리를 등록하면 내 말이 [나]로 표시됩니다"
-        )
+    def voice_stop(self):
+        if self._voice_recorder.active:
+            self._jobs.put(("voice", self._voice_recorder.stop(), None))
+        return True
 
-    def open_last(self):
-        if self.last_output:
-            open_path(self.last_output)
+    def voice_cancel(self):
+        if self._voice_recorder.active:
+            self._voice_recorder.stop()
+        return True
 
-    def on_close(self):
-        if self.recorder.active:
-            if not messagebox.askyesno(APP_NAME, "녹음 중입니다. 녹음을 저장하고 종료할까요?"):
-                return
-            self.recorder.stop()
-        if not self.jobs.empty() or (self.engine and self.engine.lock.locked()):
-            if not messagebox.askyesno(APP_NAME, "처리 중인 작업이 있습니다. 종료하면 중단됩니다. 종료할까요?"):
-                return
-        self.root.destroy()
-        os._exit(0)
+    def get_glossary(self):
+        lines = glossary_path().read_text(encoding="utf-8").splitlines()
+        return "\n".join(l for l in lines if not l.startswith("#")).strip()
+
+    def save_glossary(self, text):
+        head = [l for l in glossary_path().read_text(encoding="utf-8").splitlines() if l.startswith("#")]
+        glossary_path().write_text("\n".join(head + [text.strip()]) + "\n", encoding="utf-8")
+        return True
 
 
 def main():
     multiprocessing.freeze_support()
-    ctk.set_appearance_mode("system")
-    root = ctk.CTk()
-    App(root)
-    root.mainloop()
+    api = Api()
+    window = webview.create_window(APP_NAME, url=ui_path(), js_api=api, width=1180, height=800,
+                                   min_size=(900, 640), background_color="#f4f6f9")
+    api._window = window
+
+    def on_closing():
+        if api._recorder.active:
+            api.stop_record()
+        return True
+
+    window.events.closing += on_closing
+    webview.start(gui="edgechromium" if IS_WIN else None, debug="--debug" in sys.argv)
+    os._exit(0)
 
 
 if __name__ == "__main__":

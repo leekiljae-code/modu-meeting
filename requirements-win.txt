@@ -3,5 +3,5 @@ faster-whisper==1.2.1
 av
 numpy
 sounddevice
-customtkinter
+pywebview
 huggingface_hub

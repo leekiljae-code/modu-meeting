@@ -50,6 +50,7 @@ jobs:
       - name: Make installer
         run: |
           choco install innosetup -y --no-progress
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile installer\MicrosoftEdgeWebview2Setup.exe
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows.iss
       - uses: actions/upload-artifact@v4
         with:

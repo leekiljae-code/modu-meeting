@@ -381,3 +381,103 @@ class Engine:
             self.log(f"완료 ({(time.time() - started) / 60:.1f}분 걸림): {out.name}", progress=1.0, done=out)
             return out
 
+
+
+class LiveTranscriber:
+    CHUNK_SEC = 20
+    MATCH_SIM = 0.55
+
+    def __init__(self, engine: Engine, on_lines, on_status):
+        self.engine = engine
+        self.on_lines = on_lines
+        self.on_status = on_status
+        self.buffer = []
+        self.buffered = 0
+        self.offset = 0.0
+        self.centroids = {}
+        self.mine = np.load(voice_profile_path()) if voice_profile_path().exists() else None
+        self.recent = []
+        self.stop_event = threading.Event()
+        self.cond = threading.Condition()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def feed(self, samples: np.ndarray, rate: int):
+        if rate != SR:
+            n = int(len(samples) * SR / rate)
+            samples = np.interp(np.linspace(0, len(samples) - 1, n), np.arange(len(samples)), samples)
+        with self.cond:
+            self.buffer.append(samples.astype(np.float32))
+            self.buffered += len(samples)
+            self.cond.notify()
+
+    def stop(self):
+        self.stop_event.set()
+        with self.cond:
+            self.cond.notify()
+
+    def _take(self):
+        with self.cond:
+            while self.buffered < SR * self.CHUNK_SEC and not self.stop_event.is_set():
+                self.cond.wait(1)
+            if self.stop_event.is_set():
+                return None
+            chunk = np.concatenate(self.buffer)
+            self.buffer, self.buffered = [], 0
+            return chunk
+
+    def _name_for(self, emb):
+        if emb is None or not np.all(np.isfinite(emb)):
+            return None
+        if self.mine is not None and cosine(self.mine, emb) >= MY_VOICE_SIM:
+            return "나"
+        if self.centroids:
+            sim, name = max((cosine(c, emb), n) for n, c in self.centroids.items())
+            if sim >= self.MATCH_SIM:
+                self.centroids[name] = self.centroids[name] * 0.8 + emb * 0.2
+                return name
+        name = f"화자{len(self.centroids) + 1}"
+        self.centroids[name] = emb
+        return name
+
+    def _run(self):
+        import torch
+        eng = self.engine
+        try:
+            self.on_status("실시간 받아쓰기 준비 중…")
+            eng.load_diarizer()
+            eng.load_asr()
+            self.on_status("듣는 중")
+        except Exception as e:
+            self.on_status(f"실시간 미리보기를 쓸 수 없어요 ({e})")
+            return
+        hints, fixes = read_glossary()
+        while True:
+            chunk = self._take()
+            if chunk is None:
+                return
+            start = self.offset
+            self.offset += len(chunk) / SR
+            if np.sqrt(np.mean(chunk ** 2)) < 0.002:
+                continue
+            with eng.lock:
+                if self.stop_event.is_set():
+                    return
+                try:
+                    out = eng.pipeline({"waveform": torch.from_numpy(normalize_loudness(chunk))[None], "sample_rate": SR},
+                                       min_speakers=1, max_speakers=6)
+                    labels = out.speaker_diarization.labels()
+                    names = {lab: self._name_for(out.speaker_embeddings[i]) for i, lab in enumerate(labels)}
+                    segs = [(t.start, t.end, names.get(lab) or "화자?")
+                            for t, _, lab in out.exclusive_speaker_diarization.itertracks(yield_label=True)]
+                    lines = []
+                    for s, e, name in eng._clean_segments(segs):
+                        prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
+                        text = eng._render_text(eng._transcribe_piece(chunk[int(s * SR):int(e * SR)], prompt), fixes)
+                        if text:
+                            lines.append({"t": fmt_time(start + s), "who": name, "text": text})
+                            self.recent.append(text)
+                    if lines:
+                        self.on_lines(lines)
+                except Exception as e:
+                    self.on_status(f"실시간 미리보기 오류: {e}")

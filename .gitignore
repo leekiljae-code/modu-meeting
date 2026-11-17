@@ -3,3 +3,4 @@ build/
 dist/
 *.dmg
 *.exe
+installer/MicrosoftEdgeWebview2Setup.exe
