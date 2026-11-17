@@ -202,6 +202,7 @@ p.pg{color:var(--sub);margin-bottom:22px}
           <svg class="go" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
         </button>
       </div>
+      <div id="prep"></div>
       <div id="jobs"></div>
       <div class="sec-title"><b>최근 회의록</b><button class="link" data-go="list">전체 보기</button></div>
       <div id="recent"></div>
@@ -344,7 +345,7 @@ function syncSeg(){$$("#seg button").forEach(b=>b.classList.toggle("on",(b.datas
 syncSeg();
 
 const bars=n=>Array.from({length:n},()=>"<i></i>").join("");$("#wave").innerHTML=bars(24);$("#wave2").innerHTML=bars(13);
-function setWave(sel,level,h=20){const v=Math.min(1,level*10);$$(sel+" i").forEach((b,i)=>{const k=v*(0.35+0.65*Math.abs(Math.sin(Date.now()/170+i*1.7)));b.style.height=(4+k*h)+"px";});}
+function setWave(sel,level,h=20){const v=Math.min(1,Math.sqrt(level)*4);$$(sel+" i").forEach((b,i)=>{const k=v*(0.35+0.65*Math.abs(Math.sin(Date.now()/170+i*1.7)));b.style.height=(4+k*h)+"px";});}
 
 function cardIcon(kind){return kind==="rec"?`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0" stroke-linecap="round"/></svg>녹음`:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3b6cf6" stroke-width="2.2"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"/></svg>파일`;}
 async function refresh(){
@@ -355,7 +356,7 @@ async function refresh(){
   $("#voice-chip").textContent=v;$("#voice-chip").classList.toggle("ok",s.voice);
   $("#voice-btn").textContent=s.voice?"다시 등록":"목소리 등록";
   $("#about").innerHTML=`버전 ${s.version} · ${s.engine}<br>화자 분리 pyannote · 받아쓰기 Whisper · 모든 처리는 이 컴퓨터에서 이뤄집니다.`;
-  renderJobs(s.job);
+  renderJobs(s.job);renderPrep(s.prep);
   $("#recent").innerHTML=s.recent.length?`<div class="cards">${s.recent.slice(0,6).map(r=>`<button class="card" data-p="${esc(r.path)}"><div class="k">${cardIcon(r.kind)}</div><div class="t">${esc(r.title)}</div><div class="m">${r.date} · ${r.minutes}분 · ${r.speakers}명</div></button>`).join("")}</div>`:`<div class="empty">저장된 회의록이 없습니다.</div>`;
   $("#list").innerHTML=s.recent.length?s.recent.map(r=>`<button class="item" data-p="${esc(r.path)}"><div class="ic ${r.kind==="rec"?"ic-rec":"ic-file"}">${cardIcon(r.kind).replace(/녹음|파일/,"")}</div><div><b>${esc(r.title)}</b><small>${r.date} · ${r.minutes}분 · 참석자 ${r.speakers}명</small></div><span class="r">›</span></button>`).join(""):`<div class="empty">저장된 회의록이 없습니다.</div>`;
   $$("[data-p]").forEach(b=>b.onclick=()=>openResult(b.dataset.p));
@@ -369,11 +370,19 @@ function renderJobs(j){
   $("#jobs").innerHTML=`<div class="job"><div class="job-top"><div class="spin"></div><div><div class="job-name">${esc(j.name)}</div><div class="job-msg">${esc(j.msg)}${j.queue?` · 대기 ${j.queue}건`:""}</div></div><div class="job-pct">${Math.round(j.pct*100)}%</div></div><div class="bar"><i style="width:${j.pct*100}%"></i></div><div class="steps">${st}</div></div>`;
 }
 
+function renderPrep(p){
+  const el=$("#prep");
+  if(!p){el.innerHTML="";return;}
+  const pct=p.pct?`<div class="job-pct">${Math.round(p.pct*100)}%</div>`:"";
+  el.innerHTML=`<div class="job"><div class="job-top">${p.error?"":'<div class="spin"></div>'}<div><div class="job-name">AI 모델 준비 (최초 1회)</div><div class="job-msg">${esc(p.msg)}</div></div>${pct}</div>${p.pct?`<div class="bar"><i style="width:${p.pct*100}%"></i></div>`:""}</div>`;
+  if($("#v-record").classList.contains("on"))$("#live-status").textContent=p.msg;
+}
 window.onEvent=e=>{
   if(e.type==="level"){ if(e.voice){setWave("#wave2",e.level);$("#vtimer").textContent=fmt(e.elapsed).slice(3);} else {setWave("#wave",e.level,28);$("#timer").textContent=$("#timer2").textContent=fmt(e.elapsed);$("#core").style.transform=`scale(${1+Math.min(.25,e.level*3)})`;} }
   else if(e.type==="live"){addLive(e.lines);}
   else if(e.type==="live_status"){$("#live-status").textContent=e.msg;}
   else if(e.type==="job"){renderJobs(e.job);}
+  else if(e.type==="prep"){renderPrep(e.prep);}
   else if(e.type==="done"){renderJobs(null);toast("회의록 생성 완료");openResult(e.path);}
   else if(e.type==="voice"){refresh();toast("목소리 등록 완료");}
   else if(e.type==="error"){renderJobs(null);toast(e.msg);}
@@ -420,7 +429,7 @@ $("#voice-stop").onclick=async()=>{$("#m-voice").classList.remove("on");await ap
 $("#voice-cancel").onclick=async()=>{$("#m-voice").classList.remove("on");await api.voice_cancel();};
 $("#gloss-save").onclick=async()=>{await api.save_glossary($("#gloss").value);toast("저장됨");};
 
-async function boot(){$("#gloss").value=await api.get_glossary();refresh();}
+async function boot(){$("#gloss").value=await api.get_glossary();await refresh();api.prepare();}
 const Demo={
   get_state:()=>({voice:true,notice:true,version:"1.0.0",engine:"Windows",job:null,recent:[
     {path:"a",title:"주간 기획 회의",kind:"rec",date:"2026. 11. 17. 오후 2:10",minutes:48,speakers:4},

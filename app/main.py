@@ -143,6 +143,7 @@ class Api:
         self._voice_recorder = Recorder()
         self._live = None
         self._title = ""
+        self._prep = None
         self._current = None
         self._lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -165,6 +166,9 @@ class Api:
     def _engine_log(self, msg=None, progress=None, done=None):
         job = self._current
         if not job:
+            if msg:
+                self._prep = {"msg": msg, "pct": progress or 0}
+                self._emit({"type": "prep", "prep": self._prep})
             return
         if msg:
             if msg.startswith("받아쓰기 "):
@@ -221,8 +225,23 @@ class Api:
         return {
             "voice": voice_profile_path().exists(), "notice": (output_dir() / ".notice_ok").exists(),
             "version": VERSION, "engine": "Apple 실리콘 가속" if IS_MAC else "Windows", "recent": recent,
-            "job": self._current,
+            "job": self._current, "prep": self._prep,
         }
+
+    def prepare(self):
+        def run():
+            try:
+                eng = self._engine()
+                with eng.lock:
+                    eng.load_diarizer()
+                    eng.load_asr()
+                self._prep = None
+                self._emit({"type": "prep", "prep": None})
+            except Exception as e:
+                self._prep = {"msg": f"AI 모델 준비 실패: {e}", "pct": 0, "error": True}
+                self._emit({"type": "prep", "prep": self._prep})
+        threading.Thread(target=run, daemon=True).start()
+        return True
 
     def notice_ok(self):
         (output_dir() / ".notice_ok").write_text("ok")

@@ -111,7 +111,7 @@ class Engine:
         def report():
             while not done.wait(2):
                 mb = folder_size(target) / 1e6
-                self.log(f"{label} 내려받는 중… {mb:,.0f} / 약 {approx_mb:,} MB", progress=min(mb / approx_mb, 0.99))
+                self.log(f"{label} 내려받는 중 {mb:,.0f} / 약 {approx_mb:,} MB", progress=min(mb / approx_mb, 0.99))
 
         t = threading.Thread(target=report, daemon=True)
         t.start()
@@ -176,7 +176,7 @@ class Engine:
             return
         self.backend = self._choose_backend()
         size = {"mlx": 3100, "gpu": 3100, "cpu": 1650}[self.backend]
-        model_path = self._download(WHISPER_REPOS[self.backend], "받아쓰기 모델(처음 1회)", size)
+        model_path = self._download(WHISPER_REPOS[self.backend], "받아쓰기 모델", size)
         self.log("받아쓰기 모델 준비 중…")
         if self.backend == "mlx":
             self.asr = str(model_path)
@@ -424,6 +424,10 @@ class LiveTranscriber:
                 return None
             chunk = np.concatenate(self.buffer)
             self.buffer, self.buffered = [], 0
+            keep = SR * self.CHUNK_SEC * 3
+            if len(chunk) > keep:
+                self.offset += (len(chunk) - keep) / SR
+                chunk = chunk[-keep:]
             return chunk
 
     def _name_for(self, emb):
