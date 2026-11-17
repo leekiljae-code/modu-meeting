@@ -337,7 +337,15 @@ class Engine:
                 parts.append("(잘 안 들림)")
                 continue
             if words:
-                text = "".join(w + "(?)" if re.search(r"\d", w) and p < NUM_CONF else w for w, p in zip(words, probs))
+                out, unsure = [], False
+                for k, (w, p) in enumerate(zip(words, probs)):
+                    out.append(w)
+                    unsure = unsure or (re.search(r"\d", w) is not None and p < NUM_CONF)
+                    nxt = words[k + 1] if k + 1 < len(words) else ""
+                    if unsure and not re.match(r"^[\d,.]", nxt):
+                        out.append("(?)")
+                        unsure = False
+                text = "".join(out)
             parts.append(text.strip())
         line = re.sub(r"(\(잘 안 들림\)\s*)+", "(잘 안 들림) ", " ".join(p for p in parts if p)).strip()
         for wrong, right in fixes:
@@ -385,9 +393,10 @@ class Engine:
 
 class LiveTranscriber:
     FRAME = SR * 30 // 1000
-    END_SILENCE = 0.35
-    MAX_UTTER = 15.0
-    MIN_UTTER = 0.8
+    PAUSE = 0.35
+    TURN_END = 1.0
+    MAX_TURN = 20.0
+    MIN_AUDIO = 0.8
     MATCH_SIM = 0.5
     NEW_SPEAKER_MIN = 3.0
     MAX_LAG = 45.0
@@ -428,38 +437,36 @@ class LiveTranscriber:
             data, self.incoming = self.incoming, []
         return np.concatenate(data) if data else None
 
-    def _utterances(self):
+    def _segments(self):
         pend = np.zeros(0, np.float32)
         t0 = 0.0
         pos = 0
         floor = 0.003
-        start = None
-        last = None
-        silence_end = int(self.END_SILENCE * SR / self.FRAME)
+        start = last = None
+        pause = int(self.PAUSE * SR / self.FRAME)
         while not self.stop_event.is_set():
             new = self._pull()
             if new is None:
                 continue
             pend = np.concatenate([pend, new])
             while pos + self.FRAME <= len(pend):
-                frame = pend[pos:pos + self.FRAME]
-                rms = float(np.sqrt(np.mean(frame ** 2)))
+                rms = float(np.sqrt(np.mean(pend[pos:pos + self.FRAME] ** 2)))
                 speech = rms > max(0.006, floor * 3)
                 if not speech:
                     floor = floor * 0.97 + rms * 0.03
                 idx = pos // self.FRAME
+                pos += self.FRAME
                 if speech:
                     start = idx if start is None else start
                     last = idx
-                pos += self.FRAME
                 if start is None:
                     continue
-                long_enough = (idx - start) * self.FRAME >= self.MAX_UTTER * SR
-                if idx - last >= silence_end or long_enough:
-                    a = max(0, start * self.FRAME - SR // 5)
-                    b = min(len(pend), (last + 1) * self.FRAME + SR // 5)
-                    yield t0 + a / SR, pend[a:b].copy()
-                    cut = b if long_enough else pos
+                too_long = (idx - start) * self.FRAME >= self.MAX_TURN * SR
+                if idx - last >= pause or too_long:
+                    a = max(0, start * self.FRAME - SR // 10)
+                    b = min(len(pend), (last + 1) * self.FRAME + SR // 10)
+                    yield t0 + a / SR, t0 + b / SR, pend[a:b].copy()
+                    cut = b if too_long else pos
                     pend, t0, pos = pend[cut:], t0 + cut / SR, pos - cut
                     pos -= pos % self.FRAME
                     start = last = None
@@ -468,7 +475,7 @@ class LiveTranscriber:
                 cut -= cut % self.FRAME
                 pend, t0, pos = pend[cut:], t0 + cut / SR, max(0, pos - cut)
 
-    def _name_for(self, emb, duration):
+    def _name_for(self, emb, duration, final):
         if emb is None or not np.all(np.isfinite(emb)):
             return self.last_name or "화자1"
         known = dict(self.centroids)
@@ -479,11 +486,12 @@ class LiveTranscriber:
             sim, name = max((cosine(c, emb), n) for n, c in known.items())
             full = others is not None and len(self.centroids) >= others
             if sim >= self.MATCH_SIM or full or duration < self.NEW_SPEAKER_MIN:
-                if name != "나":
+                if final and name != "나":
                     self.centroids[name] = self.centroids[name] * 0.85 + emb * 0.15
                 return name
         name = f"화자{len(self.centroids) + 1}"
-        self.centroids[name] = emb
+        if final:
+            self.centroids[name] = emb
         return name
 
     def _run(self):
@@ -498,27 +506,41 @@ class LiveTranscriber:
             self.on_status(f"실시간 받아쓰기를 사용할 수 없습니다 ({e})")
             return
         hints, fixes = read_glossary()
-        for start, audio in self._utterances():
-            if len(audio) < self.MIN_UTTER * SR:
-                continue
-            if self.fed - (start + len(audio) / SR) > self.MAX_LAG:
+        gap = np.zeros(SR // 7, np.float32)
+        turn = None
+        for start, end, audio in self._segments():
+            if self.fed - end > self.MAX_LAG:
                 self.on_status("처리가 밀려 일부 구간을 건너뜁니다")
+                turn = None
                 continue
+            duration = end - start
             with eng.lock:
                 if self.stop_event.is_set():
                     return
                 try:
                     emb = None
-                    if len(audio) >= SR:
+                    if duration >= 1.0:
                         e = np.asarray(eng.pipeline._embedding(torch.from_numpy(normalize_loudness(audio))[None, None])).reshape(-1)
                         emb = e / (np.linalg.norm(e) + 1e-10)
-                    name = self._name_for(emb, len(audio) / SR)
+                    if turn and emb is None:
+                        name = turn["who"]
+                    else:
+                        name = self._name_for(emb, duration, True)
+                    joins = turn and turn["who"] == name and start - turn["end"] <= self.TURN_END and turn["len"] + duration <= self.MAX_TURN
+                    if joins:
+                        turn["audio"] = np.concatenate([turn["audio"], gap, audio])
+                        turn["end"], turn["len"] = end, turn["len"] + duration
+                    else:
+                        if turn and turn["text"]:
+                            self.recent.append(turn["text"])
+                        turn = {"id": f"{start:.2f}", "t": fmt_time(start), "who": name, "audio": audio, "end": end, "len": duration, "text": ""}
+                    if turn["len"] < self.MIN_AUDIO:
+                        continue
                     prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
-                    text = eng._render_text(eng._transcribe_piece(audio, prompt, fast=True), fixes)
+                    turn["text"] = eng._render_text(eng._transcribe_piece(turn["audio"], prompt, fast=True), fixes)
                 except Exception as e:
                     self.on_status(f"실시간 받아쓰기 오류: {e}")
                     continue
-            if text:
-                self.last_name = name
-                self.recent.append(text)
-                self.on_lines([{"t": fmt_time(start), "who": name, "text": text}])
+            self.last_name = name
+            if turn["text"]:
+                self.on_lines([{"id": turn["id"], "t": turn["t"], "who": turn["who"], "text": turn["text"], "final": True}])

@@ -1,5 +1,7 @@
 #define AppName "모두의 회의록"
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 
 [Setup]
 AppId={{6C1E2B0A-6A54-4C55-9E2B-3F0D7B6D2A11}
@@ -38,6 +40,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\ModuMeeting.exe"; Tasks: desk
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "화면 구성 요소(WebView2) 설치 중..."; Check: NeedsWebView2; Flags: waituntilterminated
 Filename: "{app}\ModuMeeting.exe"; Description: "{#AppName} 실행"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\ModuMeeting.exe"; Flags: nowait; Check: WizardSilent
 
 [Code]
 const WV2 = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';

@@ -1,8 +1,10 @@
+import re
 import sys
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
+VERSION = re.search(r'VERSION = "([^"]+)"', open("app/version.py", encoding="utf-8").read()).group(1)
 
 packages = [
     "pyannote.audio", "pyannote.core", "pyannote.pipeline", "pyannote.database", "pyannote.metrics",
@@ -16,7 +18,7 @@ if IS_WIN:
 if IS_MAC:
     packages += ["objc", "Foundation", "AppKit", "WebKit", "mlx", "mlx_whisper", "tiktoken", "tiktoken_ext", "numba", "llvmlite"]
 
-datas, binaries, hiddenimports = [("models", "models"), ("app/ui", "ui")], [], ["engine", "cuda_setup"]
+datas, binaries, hiddenimports = [("models", "models"), ("app/ui", "ui")], [], ["engine", "cuda_setup", "version"]
 for pkg in packages:
     try:
         d, b, h = collect_all(pkg)
@@ -67,7 +69,7 @@ if IS_MAC:
         bundle_identifier="kr.thevr.modumeeting",
         info_plist={
             "CFBundleDisplayName": "모두의 회의록",
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleShortVersionString": VERSION,
             "NSMicrophoneUsageDescription": "회의를 녹음해 화자별 텍스트로 만들기 위해 마이크가 필요합니다.",
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "13.0",

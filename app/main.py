@@ -14,9 +14,9 @@ from pathlib import Path
 
 import webview
 
-from paths import APP_NAME, IS_MAC, IS_WIN, glossary_path, output_dir, resource_dir, voice_profile_path
+from paths import APP_NAME, IS_MAC, IS_WIN, data_dir, glossary_path, output_dir, resource_dir, voice_profile_path
+from version import REPO, VERSION
 
-VERSION = "1.0.0"
 AUDIO_EXT = ("m4a", "mp3", "wav", "aac", "flac", "ogg", "opus", "mp4", "mov", "webm", "wma", "amr")
 LINE_RE = re.compile(r"^\[(\d\d:\d\d:\d\d)\] \[([^\]]+)\] (.*)$")
 
@@ -60,7 +60,7 @@ class Recorder:
                 self.listener(mono.copy(), self.rate)
 
         last_error = None
-        for rate in (16000, 48000, 44100):
+        for rate in (48000, 44100, 16000):
             try:
                 self.wav = wave.open(str(path), "wb")
                 self.wav.setnchannels(1)
@@ -242,6 +242,58 @@ class Api:
                 self._emit({"type": "prep", "prep": self._prep})
         threading.Thread(target=run, daemon=True).start()
         return True
+
+    def check_update(self):
+        import urllib.request
+        try:
+            req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest", headers={"User-Agent": APP_NAME})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rel = json.load(r)
+        except Exception:
+            return None
+        latest = rel.get("tag_name", "").lstrip("v")
+        if tuple(map(int, re.findall(r"\d+", latest))) <= tuple(map(int, re.findall(r"\d+", VERSION))):
+            return None
+        want = "windows-setup.exe" if IS_WIN else "mac.dmg"
+        asset = next((a for a in rel.get("assets", []) if a["name"].endswith(want)), None)
+        if not asset:
+            return None
+        self._update = {"version": latest, "url": asset["browser_download_url"], "size": asset["size"]}
+        return {"version": latest, "notes": (rel.get("body") or "").strip()[:400], "size": asset["size"]}
+
+    def do_update(self):
+        if not getattr(self, "_update", None) or self._recorder.active or self._current:
+            return "녹음이나 변환이 끝난 뒤 업데이트하세요"
+        threading.Thread(target=self._run_update, daemon=True).start()
+        return True
+
+    def _run_update(self):
+        import urllib.request
+        info = self._update
+        target = data_dir() / ("update-setup.exe" if IS_WIN else "update.dmg")
+        try:
+            with urllib.request.urlopen(info["url"], timeout=60) as r, open(target, "wb") as f:
+                total = int(r.headers.get("Content-Length", 0)) or info["size"]
+                got = 0
+                while chunk := r.read(1 << 20):
+                    f.write(chunk)
+                    got += len(chunk)
+                    self._emit({"type": "update", "pct": got / total, "msg": f"내려받는 중 {got / 1e6:,.0f} / {total / 1e6:,.0f} MB"})
+            self._emit({"type": "update", "pct": 1, "msg": "설치 후 자동으로 다시 시작합니다"})
+            if IS_WIN:
+                subprocess.Popen([str(target), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
+                                 creationflags=0x00000008 | 0x00000200)
+            else:
+                app = Path(sys.executable).resolve().parents[2]
+                script = (
+                    f'sleep 2; m=$(hdiutil attach -nobrowse -noverify "{target}" | tail -1 | cut -f3-); '
+                    f'rm -rf "{app}"; ditto "$m/{app.name}" "{app}"; hdiutil detach "$m" -quiet; open "{app}"'
+                )
+                subprocess.Popen(["/bin/sh", "-c", script], start_new_session=True)
+            time.sleep(1)
+            os._exit(0)
+        except Exception as e:
+            self._emit({"type": "update", "error": True, "msg": f"업데이트 실패: {e}"})
 
     def notice_ok(self):
         (output_dir() / ".notice_ok").write_text("ok")
