@@ -466,10 +466,13 @@ class LiveTranscriber:
                 try:
                     out = eng.pipeline({"waveform": torch.from_numpy(normalize_loudness(chunk))[None], "sample_rate": SR},
                                        min_speakers=1, max_speakers=6)
-                    labels = out.speaker_diarization.labels()
-                    names = {lab: self._name_for(out.speaker_embeddings[i]) for i, lab in enumerate(labels)}
-                    segs = [(t.start, t.end, names.get(lab) or "화자?")
-                            for t, _, lab in out.exclusive_speaker_diarization.itertracks(yield_label=True)]
+                    index = {lab: i for i, lab in enumerate(out.speaker_diarization.labels())}
+                    tracks = sorted((t.start, t.end, lab) for t, _, lab in out.exclusive_speaker_diarization.itertracks(yield_label=True))
+                    names = {}
+                    for _, _, lab in tracks:
+                        if lab not in names:
+                            names[lab] = self._name_for(out.speaker_embeddings[index[lab]]) if lab in index else None
+                    segs = [(s, e, names.get(lab) or "화자?") for s, e, lab in tracks]
                     lines = []
                     for s, e, name in eng._clean_segments(segs):
                         prompt = (", ".join(hints) + " " + " ".join(self.recent[-3:])).strip()[-220:]
