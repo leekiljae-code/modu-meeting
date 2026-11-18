@@ -19,6 +19,23 @@
 
 처음 실행할 때 AI 모델(약 1.6~3GB)을 한 번만 내려받습니다. 이후에는 인터넷 없이도 동작합니다. 회사·학교 네트워크에서 huggingface.co 접속이 막혀 있으면 내려받기가 실패하니, 처음 한 번은 다른 네트워크에서 실행해 주세요.
 
+## 공식 배포처
+
+모두의 회의록은 아래 세 곳에서만 배포합니다. 다른 곳에서 받은 파일은 변조되었을 수 있으니 실행하지 마세요.
+
+- 홈페이지: https://thevr.co.kr/modu-meeting/
+- GitHub: https://github.com/leekiljae-code/modu-meeting/releases
+- Microsoft Store: https://apps.microsoft.com/detail/9P0RL90CNZ9Q
+
+**받은 파일이 진짜인지 확인하기** — 릴리스마다 `SHA256SUMS.txt`에 설치 파일의 고유 값(SHA-256)을 함께 올립니다. 내 파일의 값이 같으면 공식 파일입니다.
+
+```bash
+# 윈도우 (PowerShell)
+Get-FileHash .\ModuMeeting-windows-setup.exe
+# 맥 (터미널)
+shasum -a 256 ModuMeeting-mac.dmg
+```
+
 ## 설치
 
 **맥**
@@ -87,6 +104,6 @@ python app/main.py
 
 ## 라이선스
 
-프로그램 코드는 [MIT](LICENSE) 라이선스입니다. 사용한 오픈소스와 AI 모델의 라이선스는 [NOTICE.md](NOTICE.md)를 참고하세요.
+프로그램 코드는 [MIT](LICENSE) 라이선스입니다. 단, "모두의 회의록" 이름과 아이콘은 더브이알(TheVR)의 것이며 MIT 라이선스에 포함되지 않습니다. 코드를 고쳐 다시 배포할 때는 다른 이름과 아이콘을 사용하고, 공식 버전으로 오해되지 않게 해 주세요. 사용한 오픈소스와 AI 모델의 라이선스는 [NOTICE.md](NOTICE.md)를 참고하세요.
 
 만든 곳: [TheVR (더브이알)](https://thevr.co.kr)

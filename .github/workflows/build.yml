@@ -76,8 +76,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
+      - name: Checksums
+        run: |
+          cp mac/ModuMeeting-mac.dmg windows/ModuMeeting-windows-setup.exe .
+          sha256sum ModuMeeting-mac.dmg ModuMeeting-windows-setup.exe > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            mac/ModuMeeting-mac.dmg
-            windows/ModuMeeting-windows-setup.exe
+            ModuMeeting-mac.dmg
+            ModuMeeting-windows-setup.exe
+            SHA256SUMS.txt
